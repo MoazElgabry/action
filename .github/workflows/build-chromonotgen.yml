@@ -238,6 +238,7 @@ jobs:
         env:
           INPUT_PHASE: upload
           INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
           INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"${{ env.ZIP_NAME }}"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
@@ -476,6 +477,7 @@ jobs:
         env:
           INPUT_PHASE: upload
           INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
           INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"${{ env.ZIP_NAME }}"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
