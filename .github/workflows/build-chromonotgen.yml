@@ -1,0 +1,498 @@
+name: Build Chromonotgen
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: Branch, tag, or commit in the private OFX-Building repository
+        required: true
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  CHROMONOTGEN_VERSION: "0.4.0"
+  RELEASE_CHANNEL: "private"
+  OPENFX_COMMIT: "ab779510b2655b4d11a7e01e5c521f9aa8c88976"
+  CUDA_RELEASE: "12.9.1"
+  CUDA_ARCHITECTURES: "61-real;75-real;80-real;86-real;89-real;120-real;120-virtual"
+  MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL: ${{ vars.MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL }}
+
+jobs:
+  preflight:
+    name: Check private checkout and publishing configuration
+    runs-on: ubuntu-latest
+    outputs:
+      release-id: ${{ steps.create-draft.outputs.release-id }}
+    steps:
+      - name: Require repository configuration
+        shell: bash
+        env:
+          SOURCE_TOKEN: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          WP_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          WP_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+          ACCESS_PUBLIC_KEY: ${{ vars.MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL }}
+        run: |
+          missing=()
+          [[ -n "$SOURCE_TOKEN" ]] || missing+=(OFX_BUILDING_READ_TOKEN)
+          [[ -n "$WP_USERNAME" ]] || missing+=(MOAZ_ER_USERNAME)
+          [[ -n "$WP_APPLICATION_PASSWORD" ]] || missing+=(MOAZ_ER_APPLICATION_PASSWORD)
+          [[ "$ACCESS_PUBLIC_KEY" =~ ^[A-Za-z0-9_-]{43}$ ]] || missing+=(MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL)
+          if (( ${#missing[@]} )); then
+            printf 'Missing or invalid GitHub Actions configuration: %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Check out the WordPress publisher
+        uses: actions/checkout@v7
+        with:
+          path: publisher
+
+      - name: Verify WordPress publishing access and storage before build
+        shell: bash
+        env:
+          INPUT_PHASE: health
+          INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
+          INPUT_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 publisher/scripts/publish_release.py
+
+      - name: Create private WordPress draft
+        id: create-draft
+        shell: bash
+        env:
+          INPUT_PHASE: create
+          INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
+          INPUT_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 publisher/scripts/publish_release.py
+
+  build-windows:
+    name: Windows CUDA release
+    runs-on: windows-2022
+    needs: preflight
+    outputs:
+      source-commit: ${{ steps.source.outputs.commit }}
+    env:
+      BUNDLE_NAME: Chromonotgen.ofx.bundle
+      BUNDLE_BINARY: Chromonotgen.ofx
+      ZIP_NAME: Chromonotgen_v0.4.0_windows_x86_64_portable.zip
+      ARTIFACT_NAME: Chromonotgen-v0.4.0-windows-x86_64
+    defaults:
+      run:
+        shell: powershell
+        working-directory: ofx-building/Chromonotgen/source
+    steps:
+      - name: Checkout private OFX source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/OFX-Building
+          ref: ${{ inputs.source-ref }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: ofx-building
+          persist-credentials: false
+
+      - name: Check out the WordPress publisher
+        uses: actions/checkout@v7
+        with:
+          path: publisher
+
+      - name: Record source commit
+        id: source
+        run: |
+          $commit = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $commit -notmatch '^[0-9a-f]{40}$') { throw "Could not identify private source commit" }
+          "commit=$commit" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Verify access key and project version
+        run: |
+          if ($env:MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL -notmatch '^[A-Za-z0-9_-]{43}$') { throw "The public receipt-verification key variable is missing or malformed" }
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(Chromonotgen VERSION 0\.4\.0')) { throw "Private source is not Chromonotgen 0.4.0" }
+
+      - name: Clone pinned OpenFX SDK
+        run: |
+          if (!(Test-Path "ofx-sdk/include/ofxImageEffect.h")) {
+            git clone --filter=blob:none https://github.com/AcademySoftwareFoundation/openfx.git ofx-sdk
+            git -C ofx-sdk fetch --depth 1 origin $env:OPENFX_COMMIT
+            git -C ofx-sdk checkout --detach $env:OPENFX_COMMIT
+          }
+          $sdkCommit = (git -C ofx-sdk rev-parse HEAD).Trim()
+          if ($sdkCommit -ne $env:OPENFX_COMMIT) { throw "OpenFX SDK commit mismatch: $sdkCommit" }
+
+      - name: Locate Visual Studio developer command prompt
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          if (!(Test-Path $vswhere)) { throw "vswhere.exe was not found at $vswhere" }
+          $installationPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1).Trim()
+          if ([string]::IsNullOrWhiteSpace($installationPath)) { throw "Visual Studio C++ tools were not found" }
+          $vsDevCmd = Join-Path $installationPath "Common7\Tools\VsDevCmd.bat"
+          if (!(Test-Path $vsDevCmd)) { throw "VsDevCmd.bat was not found at $vsDevCmd" }
+          "VSDEVCMD=$vsDevCmd" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install pinned CUDA toolkit
+        id: cuda-toolkit
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: ${{ env.CUDA_RELEASE }}
+          method: local
+
+      - name: Verify CUDA toolkit
+        run: |
+          $nvccOutput = (& nvcc --version 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $nvccOutput -notmatch "release 12\.9") { throw "Expected CUDA 12.9.x, got: $nvccOutput" }
+          if ([string]::IsNullOrWhiteSpace($env:CUDA_PATH) -or !(Test-Path (Join-Path $env:CUDA_PATH "bin\nvcc.exe"))) { throw "CUDA_PATH is not usable: $env:CUDA_PATH" }
+          & (Join-Path $env:CUDA_PATH "bin\cuobjdump.exe") --version
+          if ($LASTEXITCODE -ne 0) { throw "cuobjdump is missing" }
+
+      - name: Ensure Ninja
+        run: |
+          if (!(Get-Command ninja -ErrorAction SilentlyContinue)) { choco install ninja --no-progress -y }
+          ninja --version
+
+      - name: Configure under VsDevCmd
+        run: |
+          $cmake = (Get-Command cmake -ErrorAction Stop).Source
+          $ninja = (Get-Command ninja -ErrorAction Stop).Source
+          $cudaRoot = $env:CUDA_PATH
+          $configure = "`"$cmake`" -S . -B build-win -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DCMAKE_BUILD_TYPE=Release " +
+            "-DCUDAToolkit_ROOT=`"$cudaRoot`" -DCMAKE_CUDA_COMPILER=`"$cudaRoot\bin\nvcc.exe`" " +
+            "-DCMAKE_CUDA_ARCHITECTURES=$env:CUDA_ARCHITECTURES -DCHROMONOTGEN_ENABLE_CUDA=ON " +
+            "-DCHROMONOTGEN_REQUIRE_CUDA=ON -DCHROMONOTGEN_REQUIRE_PASCAL_CUDA=ON " +
+            "-DCHROMONOTGEN_BUILD_TESTS=ON"
+          cmd /c "call `"$env:VSDEVCMD`" -arch=x64 -host_arch=x64 && $configure"
+          if ($LASTEXITCODE -ne 0) { throw "CMake CUDA configure failed" }
+
+      - name: Build under VsDevCmd
+        run: |
+          $cmake = (Get-Command cmake -ErrorAction Stop).Source
+          cmd /c "call `"$env:VSDEVCMD`" -arch=x64 -host_arch=x64 && `"$cmake`" --build build-win --config Release"
+          if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
+
+      - name: Run core tests
+        run: |
+          ctest --test-dir build-win --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw "Chromonotgen core tests failed" }
+
+      - name: Validate synthetic catalog fixture
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP "chromonotgen-baselight"
+          & py scripts/validate_synthetic_catalog_fixture.py --fixture-root $fixture
+          if ($LASTEXITCODE -ne 0) { throw "Synthetic catalog validation failed" }
+
+      - name: Verify staged Windows bundle and CUDA distribution
+        run: |
+          $bundle = Join-Path "bundle" $env:BUNDLE_NAME
+          $binary = Join-Path $bundle "Contents\Win64\$env:BUNDLE_BINARY"
+          if (!(Test-Path $binary)) { throw "Missing staged plugin binary: $binary" }
+          if (!(Test-Path (Join-Path $bundle "Contents\Resources"))) { throw "Missing Resources directory" }
+          $cmake = (Get-Command cmake -ErrorAction Stop).Source
+          & $cmake "-DBUNDLE_ROOT=$((Resolve-Path $bundle).Path)" "-DPLATFORM=Windows" "-DEXPECTED_IDENTIFIER=com.moazelgabry.chromonotgen" "-DEXPECTED_VERSION=$env:CHROMONOTGEN_VERSION" -P cmake/ValidateChromonotgenBundle.cmake
+          if ($LASTEXITCODE -ne 0) { throw "Bundle validation failed" }
+          $private = Get-ChildItem -LiteralPath $bundle -Recurse -File | Where-Object { $_.Extension -match "(?i)^\.(cube|dctl)$" }
+          if ($private) { throw "Private LUT/DCTL resources were packaged: $($private.FullName -join ', ')" }
+
+          $cuobjdump = Join-Path $env:CUDA_PATH "bin\cuobjdump.exe"
+          $elf = (& $cuobjdump --list-elf $binary 2>&1 | Out-String)
+          $ptx = (& $cuobjdump --list-ptx $binary 2>&1 | Out-String)
+
+          foreach ($arch in @("sm_61", "sm_75", "sm_80", "sm_86", "sm_89", "sm_120")) {
+            if ($elf -notmatch [regex]::Escape($arch)) {
+              throw "Missing CUDA cubin architecture $arch`n$elf"
+            }
+          }
+
+          if ($ptx -notmatch "sm_120") {
+            throw "Missing CUDA 12.0 PTX fallback`n$ptx"
+          }
+          $depsFile = Join-Path $env:RUNNER_TEMP "chromonotgen-dependents.txt"
+          cmd /c "call `"$env:VSDEVCMD`" -arch=x64 -host_arch=x64 && dumpbin /DEPENDENTS `"$((Resolve-Path $binary).Path)`" > `"$depsFile`""
+          if ($LASTEXITCODE -ne 0) { throw "dumpbin dependency inspection failed" }
+          if (Select-String -LiteralPath $depsFile -Pattern "cudart64_|cublas64_|cufft64_|curand64_" -Quiet) { throw "Dynamic CUDA runtime/library dependency found; static runtime required" }
+
+      - name: Package and extract Windows bundle
+        run: |
+          $bundle = Join-Path "bundle" $env:BUNDLE_NAME
+          $zip = Join-Path (Get-Location) $env:ZIP_NAME
+          if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path $bundle -DestinationPath $zip -CompressionLevel Optimal
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash.ToLowerInvariant()
+          "$hash  $env:ZIP_NAME" | Set-Content -LiteralPath "$zip.sha256" -NoNewline
+          $extract = Join-Path $env:RUNNER_TEMP "chromonotgen-extract"
+          if (Test-Path $extract) { Remove-Item -LiteralPath $extract -Recurse -Force }
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract
+          $extracted = Join-Path $extract $env:BUNDLE_NAME
+          if (!(Test-Path (Join-Path $extracted "Contents\Win64\$env:BUNDLE_BINARY"))) { throw "Extracted Windows bundle is incomplete" }
+          $cmake = (Get-Command cmake -ErrorAction Stop).Source
+          & $cmake "-DBUNDLE_ROOT=$((Resolve-Path $extracted).Path)" "-DPLATFORM=Windows" -P cmake/ValidateChromonotgenBundle.cmake
+          if ($LASTEXITCODE -ne 0) { throw "Extracted bundle validation failed" }
+
+      - name: Upload Windows bundle directly to WordPress draft
+        shell: powershell
+        env:
+          INPUT_PHASE: upload
+          INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
+          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"${{ env.ZIP_NAME }}"}]'
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python "$env:GITHUB_WORKSPACE/publisher/scripts/publish_release.py"
+
+  build-macos:
+    name: macOS universal Metal release
+    runs-on: macos-14
+    needs: preflight
+    outputs:
+      source-commit: ${{ steps.source.outputs.commit }}
+    env:
+      BUNDLE_NAME: Chromonotgen.ofx.bundle
+      BUNDLE_BINARY: Chromonotgen.ofx
+      ZIP_NAME: Chromonotgen_v0.4.0_macos_universal_portable.zip
+      PKG_NAME: Chromonotgen_v0.4.0_macos_universal.pkg
+      PKG_IDENTIFIER: com.moazelgabry.chromonotgen.installer
+      ARTIFACT_NAME: Chromonotgen-v0.4.0-macos-universal
+    defaults:
+      run:
+        shell: bash
+        working-directory: ofx-building/Chromonotgen/source
+    steps:
+      - name: Checkout private OFX source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/OFX-Building
+          ref: ${{ inputs.source-ref }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: ofx-building
+          persist-credentials: false
+
+      - name: Check out the WordPress publisher
+        uses: actions/checkout@v7
+        with:
+          path: publisher
+
+      - name: Record source commit
+        id: source
+        run: |
+          commit="$(git rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not identify private source commit" >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify access key and project version
+        run: |
+          [[ "$MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || { echo "The public receipt-verification key variable is missing or malformed" >&2; exit 1; }
+          grep -Eq 'project\(Chromonotgen VERSION 0\.4\.0' CMakeLists.txt || { echo "Private source is not Chromonotgen 0.4.0" >&2; exit 1; }
+
+      - name: Clone pinned OpenFX SDK
+        run: |
+          if [ ! -f "ofx-sdk/include/ofxImageEffect.h" ]; then
+            git clone --filter=blob:none https://github.com/AcademySoftwareFoundation/openfx.git ofx-sdk
+            git -C ofx-sdk fetch --depth 1 origin "${OPENFX_COMMIT}"
+            git -C ofx-sdk checkout --detach "${OPENFX_COMMIT}"
+          fi
+          test "$(git -C ofx-sdk rev-parse HEAD)" = "${OPENFX_COMMIT}"
+
+      - name: Ensure Ninja
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
+          ninja --version
+
+      - name: Configure universal Metal build
+        run: |
+          cmake -S . -B build-macos -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DCMAKE_OSX_ARCHITECTURES='x86_64;arm64' \
+            -DCHROMONOTGEN_TEST_ARCHITECTURES="$(uname -m)" \
+            -DCHROMONOTGEN_ENABLE_CUDA=OFF \
+            -DCHROMONOTGEN_REQUIRE_METAL=ON \
+            -DCHROMONOTGEN_BUILD_TESTS=ON
+
+      - name: Build and test
+        run: |
+          time cmake --build build-macos --config Release
+
+      - name: Verify Metal GPU execution
+        run: |
+          test "$(uname -m)" = "arm64"
+          CHROMONOTGEN_REQUIRE_METAL_GPU=1 ctest --test-dir build-macos --output-on-failure --verbose \
+            -R '^SectorMetalSmokeTests$'
+
+      - name: Run remaining tests
+        run: |
+          time ctest --test-dir build-macos --output-on-failure \
+            -E '^SectorMetalSmokeTests$'
+
+      - name: Validate synthetic catalog fixture
+        run: |
+          fixture="${RUNNER_TEMP}/chromonotgen-baselight"
+          python3 scripts/validate_synthetic_catalog_fixture.py \
+            --fixture-root "${fixture}"
+
+      - name: Verify staged macOS bundle
+        run: |
+          bundle="bundle/${BUNDLE_NAME}"
+          binary="${bundle}/Contents/MacOS/${BUNDLE_BINARY}"
+          test -f "${binary}"
+          test -d "${bundle}/Contents/Resources"
+          cmake -DBUNDLE_ROOT="$(cd "${bundle}" && pwd)" -DPLATFORM=macOS \
+            -DEXPECTED_IDENTIFIER=com.moazelgabry.chromonotgen \
+            -DEXPECTED_VERSION="${CHROMONOTGEN_VERSION}" \
+            -P cmake/ValidateChromonotgenBundle.cmake
+          arches="$(lipo -archs "${binary}")"
+
+          echo "macOS architectures: ${arches}"
+
+          echo "${arches}" | grep -qw "x86_64" || {
+            echo "Missing x86_64 architecture: ${arches}" >&2
+            exit 1
+          }
+
+          echo "${arches}" | grep -qw "arm64" || {
+            echo "Missing arm64 architecture: ${arches}" >&2
+            exit 1
+          }
+          otool -l "${binary}" | grep -A5 LC_BUILD_VERSION | grep -q "minos 13.0"
+          test "$(plutil -extract CFBundleIdentifier raw -o - "${bundle}/Contents/Info.plist")" = "com.moazelgabry.chromonotgen"
+          test "$(plutil -extract CFBundleVersion raw -o - "${bundle}/Contents/Info.plist")" = "${CHROMONOTGEN_VERSION}"
+          if find "${bundle}" -type f \( -iname '*.cube' -o -iname '*.dctl' \) -print -quit | grep -q .; then
+            echo "Private LUT/DCTL resources were packaged" >&2; exit 1
+          fi
+          echo "macOS dynamic dependencies:"
+          otool -L "${binary}"
+
+          non_system_deps="$(
+            otool -L "${binary}" \
+              | grep '^[[:space:]]' \
+              | sed 's/^[[:space:]]*//' \
+              | grep -Ev "^(/System/Library/Frameworks/|/usr/lib/|@rpath/${BUNDLE_BINARY}[[:space:]])" \
+              || true
+          )"
+
+          if [ -n "${non_system_deps}" ]; then
+            echo "Non-system macOS dependencies found:" >&2
+            echo "${non_system_deps}" >&2
+            exit 1
+          fi
+
+      - name: Package and extract macOS bundle
+        run: |
+          zip="${ZIP_NAME}"
+          rm -f "${zip}" "${zip}.sha256"
+          ditto -c -k --sequesterRsrc --keepParent "bundle/${BUNDLE_NAME}" "${zip}"
+          shasum -a 256 "${zip}" | awk '{print tolower($1) "  " $2}' > "${zip}.sha256"
+          extract="${RUNNER_TEMP}/chromonotgen-extract"
+          rm -rf "${extract}"; mkdir -p "${extract}"
+          ditto -x -k "${zip}" "${extract}"
+          test -f "${extract}/${BUNDLE_NAME}/Contents/MacOS/${BUNDLE_BINARY}"
+          cmake -DBUNDLE_ROOT="${extract}/${BUNDLE_NAME}" -DPLATFORM=macOS -P cmake/ValidateChromonotgenBundle.cmake
+
+      - name: Package unsigned macOS OFX installer
+        run: |
+          pkgroot="${RUNNER_TEMP}/chromonotgen-pkgroot"
+          pkg="${PKG_NAME}"
+
+          rm -rf "${pkgroot}" "${pkg}" "${pkg}.sha256"
+          mkdir -p "${pkgroot}/Library/OFX/Plugins"
+          ditto "bundle/${BUNDLE_NAME}" "${pkgroot}/Library/OFX/Plugins/${BUNDLE_NAME}"
+
+          if find "${pkgroot}" -type f \( -iname '*.cube' -o -iname '*.dctl' \) -print -quit | grep -q .; then
+            echo "Private LUT/DCTL resources were staged for the macOS package" >&2
+            exit 1
+          fi
+
+          pkgbuild \
+            --root "${pkgroot}" \
+            --identifier "${PKG_IDENTIFIER}" \
+            --version "${CHROMONOTGEN_VERSION}" \
+            --install-location / \
+            "${pkg}"
+
+          expanded="${RUNNER_TEMP}/chromonotgen-pkg"
+          rm -rf "${expanded}"
+          pkgutil --expand "${pkg}" "${expanded}"
+          test -f "${expanded}/PackageInfo"
+          test -f "${expanded}/Payload"
+          package_info="$(cat "${expanded}/PackageInfo")"
+          printf '%s\n' "${package_info}"
+          grep -Fq "identifier=\"${PKG_IDENTIFIER}\"" <<<"${package_info}" || {
+            echo "Unexpected package identifier" >&2
+            exit 1
+          }
+          grep -Fq "version=\"${CHROMONOTGEN_VERSION}\"" <<<"${package_info}" || {
+            echo "Unexpected package version" >&2
+            exit 1
+          }
+          grep -Fq 'install-location="/"' <<<"${package_info}" || {
+            echo "Unexpected package install location" >&2
+            exit 1
+          }
+
+          payload="$(pkgutil --payload-files "${pkg}")"
+          printf '%s\n' "${payload}"
+          grep -Fq "Library/OFX/Plugins/${BUNDLE_NAME}/Contents/MacOS/${BUNDLE_BINARY}" <<<"${payload}" || {
+            echo "macOS package payload is missing the OFX binary" >&2
+            exit 1
+          }
+          grep -Fq "Library/OFX/Plugins/${BUNDLE_NAME}/Contents/Info.plist" <<<"${payload}" || {
+            echo "macOS package payload is missing the bundle Info.plist" >&2
+            exit 1
+          }
+          if grep -Eiq '\.(cube|dctl)$' <<<"${payload}"; then
+            echo "Private LUT/DCTL resources were included in the macOS package payload" >&2
+            exit 1
+          fi
+
+          signature_log="${RUNNER_TEMP}/chromonotgen-pkg-signature.txt"
+          pkgutil --check-signature "${pkg}" >"${signature_log}" 2>&1 || true
+          cat "${signature_log}"
+          if ! grep -Fq 'Status: no signature' "${signature_log}"; then
+            echo "The macOS package must remain unsigned" >&2
+            exit 1
+          fi
+
+          shasum -a 256 "${pkg}" | awk '{print tolower($1) "  " $2}' > "${pkg}.sha256"
+          shasum -a 256 -c "${pkg}.sha256"
+
+      - name: Upload macOS bundle directly to WordPress draft
+        env:
+          INPUT_PHASE: upload
+          INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
+          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"${{ env.ZIP_NAME }}"}]'
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 "$GITHUB_WORKSPACE/publisher/scripts/publish_release.py"
+
+  publish-wordpress:
+    name: Upload Windows and macOS builds to WordPress
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-macos]
+    steps:
+      - name: Check that both builds used the same private source commit
+        env:
+          WINDOWS_SOURCE_COMMIT: ${{ needs.build-windows.outputs.source-commit }}
+          MACOS_SOURCE_COMMIT: ${{ needs.build-macos.outputs.source-commit }}
+        run: |
+          test -n "$WINDOWS_SOURCE_COMMIT" && test "$WINDOWS_SOURCE_COMMIT" = "$MACOS_SOURCE_COMMIT"
+
+      - name: Check out the WordPress publisher
+        uses: actions/checkout@v7
+        with:
+          path: publisher
+
+      - name: Complete WordPress draft after both direct uploads
+        env:
+          INPUT_PHASE: complete
+          INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
+          INPUT_SOURCE_COMMIT: ${{ needs.build-windows.outputs.source-commit }}
+          INPUT_SOURCE_RUN: ${{ github.run_id }}
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 publisher/scripts/publish_release.py

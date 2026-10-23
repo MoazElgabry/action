@@ -1,0 +1,58 @@
+name: Publish WordPress release draft
+description: Upload build artifacts for any registered project to the Moaz Elgabry Releases WordPress plugin.
+author: Moaz Elgabry
+inputs:
+  project-slug:
+    description: Registered project slug in the Releases plugin, for example hyogen.
+    required: true
+  version:
+    description: Release version to create or update as a draft.
+    required: true
+  channel:
+    description: Release channel; use private for invitation-only projects and dev for regular development builds.
+    required: false
+    default: dev
+  source-commit:
+    description: Source commit identifier recorded on the release draft.
+    required: true
+  source-run:
+    description: CI run identifier recorded on the release draft.
+    required: true
+  artifacts:
+    description: JSON array of objects with platform, architecture, and path fields.
+    required: true
+  wordpress-username:
+    description: WordPress automation account username. Pass from a GitHub secret.
+    required: true
+  wordpress-application-password:
+    description: WordPress Application Password. Pass from a GitHub secret.
+    required: true
+outputs:
+  release-id:
+    description: WordPress release draft ID.
+    value: ${{ steps.publish.outputs.release-id }}
+  missing-targets:
+    description: Required platform/architecture targets still missing from the draft.
+    value: ${{ steps.publish.outputs.missing-targets }}
+runs:
+  using: composite
+  steps:
+    - name: Upload artifacts and complete draft
+      id: publish
+      shell: bash
+      env:
+        INPUT_PROJECT_SLUG: ${{ inputs.project-slug }}
+        INPUT_VERSION: ${{ inputs.version }}
+        INPUT_CHANNEL: ${{ inputs.channel }}
+        INPUT_SOURCE_COMMIT: ${{ inputs.source-commit }}
+        INPUT_SOURCE_RUN: ${{ inputs.source-run }}
+        INPUT_ARTIFACTS: ${{ inputs.artifacts }}
+        MOAZ_ER_USERNAME: ${{ inputs.wordpress-username }}
+        MOAZ_ER_APPLICATION_PASSWORD: ${{ inputs.wordpress-application-password }}
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        if command -v python3 >/dev/null 2>&1; then
+          python3 "${{ github.action_path }}/scripts/publish_release.py"
+        else
+          python "${{ github.action_path }}/scripts/publish_release.py"
+        fi
