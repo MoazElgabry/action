@@ -153,6 +153,7 @@ jobs:
         env:
           INPUT_PHASE: upload
           INPUT_PROJECT_SLUG: bgrade
+          INPUT_VERSION: ${{ env.BGRADE_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
           INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"BGrade_v0.1.0_windows_x86_64_portable.zip"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
@@ -228,6 +229,7 @@ jobs:
         env:
           INPUT_PHASE: upload
           INPUT_PROJECT_SLUG: bgrade
+          INPUT_VERSION: ${{ env.BGRADE_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
           INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"BGrade_v0.1.0_macos_universal_portable.zip"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
