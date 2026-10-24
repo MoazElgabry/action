@@ -505,6 +505,7 @@ jobs:
         env:
           INPUT_PHASE: complete
           INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
           INPUT_SOURCE_COMMIT: ${{ needs.build-windows.outputs.source-commit }}
           INPUT_SOURCE_RUN: ${{ github.run_id }}
