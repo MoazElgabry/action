@@ -136,7 +136,9 @@ jobs:
           $env:BGRADE_CUDA_ARCHITECTURES = "61;75;80;86;89;120"
           & .\build_cuda_vc.bat
           if ($LASTEXITCODE -ne 0) { throw "B-Grade CUDA build or configured tests failed" }
-          ctest --test-dir build-cuda --output-on-failure
+          # GitHub-hosted Windows runners have no compatible NVIDIA driver; keep
+          # CUDA compilation covered, but omit the runtime smoke test that needs a GPU.
+          ctest --test-dir build-cuda --output-on-failure -E "^BGradeCudaSmokeTests$"
           if ($LASTEXITCODE -ne 0) { throw "B-Grade Windows tests failed" }
       - name: Validate and package Windows bundle
         run: |
@@ -205,6 +207,8 @@ jobs:
           sdk_commit="$(git -C "$sdk" rev-parse HEAD)"
           [[ "$sdk_commit" == "$OPENFX_COMMIT" ]] || { echo "OpenFX SDK commit mismatch: $sdk_commit" >&2; exit 1; }
           test -f "$sdk/include/ofxImageEffect.h" || { echo "Pinned OpenFX SDK headers are missing" >&2; exit 1; }
+      - name: Install Rust targets for universal receipt verifier
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - name: Build universal macOS bundle
         run: |
           bash ./build_macos_universal.sh build-macos-universal
