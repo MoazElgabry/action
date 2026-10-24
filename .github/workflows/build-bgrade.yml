@@ -16,9 +16,14 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   BGRADE_VERSION: "0.1.0"
   RELEASE_CHANNEL: "private"
+  OPENFX_COMMIT: "ab779510b2655b4d11a7e01e5c521f9aa8c88976"
   CUDA_RELEASE: "12.9.1"
   BGRADE_CUDA_ARCHITECTURES: "61;75;80;86;89;120"
   MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL: ${{ vars.MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL }}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  queue: max
 
 jobs:
   preflight:
@@ -103,7 +108,21 @@ jobs:
         run: |
           if ($env:MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL -notmatch '^[A-Za-z0-9_-]{43}$') { throw "The public receipt-verification key variable is missing or malformed" }
           if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.0')) { throw "Private source is not B-Grade 0.1.0" }
-          if (!(Test-Path "../../Chromonotgen/source/ofx-sdk/include/ofxImageEffect.h")) { throw "The pinned OpenFX SDK checkout is missing from OFX-Building" }
+      - name: Clone and verify pinned OpenFX SDK
+        run: |
+          $sdk = "../../Chromonotgen/source/ofx-sdk"
+          if (!(Test-Path (Join-Path $sdk "include\ofxImageEffect.h"))) {
+            New-Item -ItemType Directory -Force -Path (Split-Path $sdk) | Out-Null
+            git clone --filter=blob:none https://github.com/AcademySoftwareFoundation/openfx.git $sdk
+            if ($LASTEXITCODE -ne 0) { throw "Could not clone the OpenFX SDK" }
+            git -C $sdk fetch --depth 1 origin $env:OPENFX_COMMIT
+            if ($LASTEXITCODE -ne 0) { throw "Could not fetch the pinned OpenFX SDK commit" }
+            git -C $sdk checkout --detach $env:OPENFX_COMMIT
+            if ($LASTEXITCODE -ne 0) { throw "Could not check out the pinned OpenFX SDK commit" }
+          }
+          $sdkCommit = (git -C $sdk rev-parse HEAD).Trim()
+          if ($sdkCommit -ne $env:OPENFX_COMMIT) { throw "OpenFX SDK commit mismatch: $sdkCommit" }
+          if (!(Test-Path (Join-Path $sdk "include\ofxImageEffect.h"))) { throw "Pinned OpenFX SDK headers are missing" }
       - name: Install pinned CUDA toolkit
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
@@ -174,7 +193,18 @@ jobs:
         run: |
           [[ "$MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || { echo "The public receipt-verification key variable is missing or malformed" >&2; exit 1; }
           grep -Eq 'project\(BGrade VERSION 0\.1\.0' CMakeLists.txt || { echo "Private source is not B-Grade 0.1.0" >&2; exit 1; }
-          test -f ../../Chromonotgen/source/ofx-sdk/include/ofxImageEffect.h || { echo "The OpenFX SDK checkout is missing from OFX-Building" >&2; exit 1; }
+      - name: Clone and verify pinned OpenFX SDK
+        run: |
+          sdk="../../Chromonotgen/source/ofx-sdk"
+          if [ ! -f "$sdk/include/ofxImageEffect.h" ]; then
+            mkdir -p "$(dirname "$sdk")"
+            git clone --filter=blob:none https://github.com/AcademySoftwareFoundation/openfx.git "$sdk"
+            git -C "$sdk" fetch --depth 1 origin "$OPENFX_COMMIT"
+            git -C "$sdk" checkout --detach "$OPENFX_COMMIT"
+          fi
+          sdk_commit="$(git -C "$sdk" rev-parse HEAD)"
+          [[ "$sdk_commit" == "$OPENFX_COMMIT" ]] || { echo "OpenFX SDK commit mismatch: $sdk_commit" >&2; exit 1; }
+          test -f "$sdk/include/ofxImageEffect.h" || { echo "Pinned OpenFX SDK headers are missing" >&2; exit 1; }
       - name: Build universal macOS bundle
         run: |
           ./build_macos_universal.sh build-macos-universal
