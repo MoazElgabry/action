@@ -265,8 +265,6 @@ def main() -> int:
     try:
         if not _SLUG.fullmatch(project_slug):
             raise PublishError("project-slug must be a registered lowercase slug using letters, digits, and hyphens")
-        if not version or any(char in version for char in "\r\n"):
-            raise PublishError("version is required and must be a single line")
         client = WordPressReleaseClient(
             DEFAULT_API_ORIGIN,
             username,
@@ -277,8 +275,8 @@ def main() -> int:
         if phase == "health":
             client.check_health()
         elif phase == "create":
-            if not version:
-                raise PublishError("version is required when creating a release draft")
+            if not version or any(char in version for char in "\r\n"):
+                raise PublishError("version is required and must be a single line when creating a release draft")
             release_id = client.create_draft(project_slug, version, channel)
         elif phase == "upload":
             if not raw_release_id.isdigit() or int(raw_release_id) < 1:
@@ -294,7 +292,7 @@ def main() -> int:
             release_id = int(raw_release_id)
             missing = client.complete_draft(release_id, source_commit, source_run)
         elif phase == "publish":
-            if not version or not source_commit or not source_run:
+            if not version or any(char in version for char in "\r\n") or not source_commit or not source_run:
                 raise PublishError("version, source-commit and source-run are required")
             artifacts = _load_artifacts(os.environ.get("INPUT_ARTIFACTS", ""))
             release_id, missing = client.publish_draft(

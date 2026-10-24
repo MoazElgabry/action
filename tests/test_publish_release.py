@@ -29,6 +29,23 @@ class _Response:
 
 
 class PublishActionTests(unittest.TestCase):
+    def test_complete_phase_does_not_require_version(self) -> None:
+        with patch.dict(publisher.os.environ, {
+            "INPUT_PROJECT_SLUG": "bgrade",
+            "INPUT_PHASE": "complete",
+            "INPUT_RELEASE_ID": "6",
+            "INPUT_SOURCE_COMMIT": "abc123",
+            "INPUT_SOURCE_RUN": "40100081749",
+            "MOAZ_ER_USERNAME": "account",
+            "MOAZ_ER_APPLICATION_PASSWORD": "app-password",
+        }, clear=True):
+            client = unittest.mock.Mock()
+            client.complete_draft.return_value = []
+            with patch.object(publisher, "WordPressReleaseClient", return_value=client):
+                self.assertEqual(publisher.main(), 0)
+
+        client.complete_draft.assert_called_once_with(6, "abc123", "40100081749")
+
     def test_http_errors_report_safe_host_diagnostics(self) -> None:
         headers = Message()
         headers["Content-Type"] = "text/html"
