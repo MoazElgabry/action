@@ -140,10 +140,11 @@ jobs:
         run: |
           $bundle = Join-Path (Get-Location) "bundle-cuda\BGrade.ofx.bundle"
           $binary = Join-Path $bundle "Contents\Win64\BGrade.ofx"
-          $info = Join-Path $bundle "Contents\Info.plist"
-          if (!(Test-Path $binary) -or !(Test-Path $info)) { throw "Windows B-Grade bundle is incomplete" }
-          if (!(Select-String -Path $info -Pattern 'com\.moazelgabry\.bgrade' -Quiet)) { throw "Unexpected B-Grade bundle identifier" }
-          if (!(Select-String -Path $info -Pattern '<string>0\.1\.0</string>' -Quiet)) { throw "Unexpected B-Grade bundle version" }
+          if (!(Test-Path $binary)) { throw "Windows B-Grade bundle is missing its plugin binary: $binary" }
+          # Windows bundles do not contain Info.plist; verify identity/version
+          # against the checked-out CMake project instead.
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'set\(PLUGIN_IDENTIFIER "com\.moazelgabry\.bgrade"\)' -Quiet)) { throw "Unexpected B-Grade bundle identifier" }
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.0' -Quiet)) { throw "Unexpected B-Grade bundle version" }
           $zip = "BGrade_v0.1.0_windows_x86_64_portable.zip"
           if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
           Compress-Archive -Path $bundle -DestinationPath $zip -CompressionLevel Optimal
