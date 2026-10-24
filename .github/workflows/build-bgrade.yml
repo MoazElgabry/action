@@ -207,7 +207,7 @@ jobs:
           test -f "$sdk/include/ofxImageEffect.h" || { echo "Pinned OpenFX SDK headers are missing" >&2; exit 1; }
       - name: Build universal macOS bundle
         run: |
-          ./build_macos_universal.sh build-macos-universal
+          bash ./build_macos_universal.sh build-macos-universal
           ctest --test-dir build-macos-universal --output-on-failure
       - name: Validate and package macOS bundle
         run: |
