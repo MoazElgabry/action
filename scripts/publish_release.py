@@ -76,7 +76,21 @@ class WordPressReleaseClient:
             except OSError:
                 detail = "HTTP request failed"
             detail = _redact(detail, self._redactions)
-            raise PublishError(f"WordPress API returned HTTP {error.code}: {detail[:500]}") from None
+            response_context: list[str] = []
+            if error.headers is not None:
+                for header in (
+                    "Content-Type",
+                    "Server",
+                    "X-Hcdn-Request-Id",
+                    "X-Request-Id",
+                    "CF-Ray",
+                    "X-LiteSpeed-Cache",
+                ):
+                    value = error.headers.get(header)
+                    if value:
+                        response_context.append(f"{header}={value[:160]}")
+            context = f" ({'; '.join(response_context)})" if response_context else ""
+            raise PublishError(f"WordPress API returned HTTP {error.code}{context}: {detail[:500]}") from None
         except (urllib.error.URLError, OSError) as error:
             detail = _redact(str(error), self._redactions)
             raise PublishError(f"WordPress API request failed: {detail[:500]}") from None

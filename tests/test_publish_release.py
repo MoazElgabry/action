@@ -4,8 +4,10 @@ import json
 import sys
 import tempfile
 import unittest
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.request import Request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -27,6 +29,28 @@ class _Response:
 
 
 class PublishActionTests(unittest.TestCase):
+    def test_http_errors_report_safe_host_diagnostics(self) -> None:
+        headers = Message()
+        headers["Content-Type"] = "text/html"
+        headers["Server"] = "hcdn"
+        headers["X-Hcdn-Request-Id"] = "trace-123"
+        error = HTTPError(
+            "https://example.test/api/upload",
+            403,
+            "Forbidden",
+            headers,
+            None,
+        )
+
+        with patch.object(publisher.urllib.request.OpenerDirector, "open", side_effect=error):
+            client = publisher.WordPressReleaseClient("https://example.test/api", "account", "app-password")
+            request = Request("https://example.test/api/upload")
+            with self.assertRaisesRegex(
+                publisher.PublishError,
+                r"HTTP 403 \(Content-Type=text/html; Server=hcdn; X-Hcdn-Request-Id=trace-123\)",
+            ):
+                client._open(request, timeout=30)
+
     def test_generic_project_draft_uploads_artifacts_and_source_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             artifact_path = Path(temporary) / "tool.pkg"

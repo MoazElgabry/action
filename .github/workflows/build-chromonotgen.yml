@@ -233,17 +233,14 @@ jobs:
           & $cmake "-DBUNDLE_ROOT=$((Resolve-Path $extracted).Path)" "-DPLATFORM=Windows" -P cmake/ValidateChromonotgenBundle.cmake
           if ($LASTEXITCODE -ne 0) { throw "Extracted bundle validation failed" }
 
-      - name: Upload Windows bundle directly to WordPress draft
-        shell: powershell
-        env:
-          INPUT_PHASE: upload
-          INPUT_PROJECT_SLUG: chromonotgen
-          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
-          INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"${{ env.ZIP_NAME }}"}]'
-          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
-          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
-        run: python "$env:GITHUB_WORKSPACE/publisher/scripts/publish_release.py"
+      - name: Stage Windows bundle for the shared publisher
+        uses: actions/upload-artifact@v7
+        with:
+          name: chromonotgen-windows-bundle
+          path: ofx-building/Chromonotgen/source/${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
   build-macos:
     name: macOS universal Metal release
@@ -473,21 +470,22 @@ jobs:
           shasum -a 256 "${pkg}" | awk '{print tolower($1) "  " $2}' > "${pkg}.sha256"
           shasum -a 256 -c "${pkg}.sha256"
 
-      - name: Upload macOS bundle directly to WordPress draft
-        env:
-          INPUT_PHASE: upload
-          INPUT_PROJECT_SLUG: chromonotgen
-          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
-          INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"${{ env.ZIP_NAME }}"}]'
-          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
-          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
-        run: python3 "$GITHUB_WORKSPACE/publisher/scripts/publish_release.py"
+      - name: Stage macOS bundle for the shared publisher
+        uses: actions/upload-artifact@v7
+        with:
+          name: chromonotgen-macos-bundle
+          path: ofx-building/Chromonotgen/source/${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
 
   publish-wordpress:
     name: Upload Windows and macOS builds to WordPress
     runs-on: ubuntu-latest
-    needs: [build-windows, build-macos]
+    needs: [preflight, build-windows, build-macos]
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Check that both builds used the same private source commit
         env:
@@ -501,7 +499,30 @@ jobs:
         with:
           path: publisher
 
-      - name: Complete WordPress draft after both direct uploads
+      - name: Download Windows bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: chromonotgen-windows-bundle
+          path: release-artifacts/windows
+
+      - name: Download macOS bundle
+        uses: actions/download-artifact@v7
+        with:
+          name: chromonotgen-macos-bundle
+          path: release-artifacts/macos
+
+      - name: Upload both bundles to the existing WordPress draft
+        env:
+          INPUT_PHASE: upload
+          INPUT_PROJECT_SLUG: chromonotgen
+          INPUT_VERSION: ${{ env.CHROMONOTGEN_VERSION }}
+          INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
+          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"release-artifacts/windows/Chromonotgen_v0.4.0_windows_x86_64_portable.zip"},{"platform":"macos","architecture":"universal","path":"release-artifacts/macos/Chromonotgen_v0.4.0_macos_universal_portable.zip"}]'
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 publisher/scripts/publish_release.py
+
+      - name: Complete WordPress draft after both uploads
         env:
           INPUT_PHASE: complete
           INPUT_PROJECT_SLUG: chromonotgen
@@ -512,3 +533,31 @@ jobs:
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python3 publisher/scripts/publish_release.py
+
+      - name: Remove temporary GitHub build artifacts after WordPress confirms completion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifacts_json="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts")"
+          mapfile -t artifact_ids < <(jq -r '.artifacts[] | select(.name == "chromonotgen-windows-bundle" or .name == "chromonotgen-macos-bundle") | .id' <<<"${artifacts_json}")
+          if [[ "${#artifact_ids[@]}" -ne 2 ]]; then
+            echo "Expected both temporary Chromonotgen artifacts before cleanup; found ${#artifact_ids[@]}." >&2
+            exit 1
+          fi
+          for artifact_id in "${artifact_ids[@]}"; do
+            curl --fail --silent --show-error -X DELETE \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/artifacts/${artifact_id}"
+          done
+          remaining="$(curl --fail --silent --show-error \
+            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts" \
+            | jq '[.artifacts[] | select(.name == "chromonotgen-windows-bundle" or .name == "chromonotgen-macos-bundle")] | length')"
+          [[ "${remaining}" == "0" ]] || { echo "Temporary Chromonotgen artifacts remain after cleanup." >&2; exit 1; }
