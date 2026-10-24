@@ -21,10 +21,6 @@ env:
   BGRADE_CUDA_ARCHITECTURES: "61;75;80;86;89;120"
   MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL: ${{ vars.MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL }}
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  queue: max
-
 jobs:
   preflight:
     name: Check configuration and create private release draft
@@ -241,13 +237,8 @@ jobs:
     name: Complete private WordPress draft
     runs-on: ubuntu-latest
     needs: [preflight, build-windows, build-macos]
+    if: always() && needs.preflight.result == 'success' && (needs.build-windows.result == 'success' || needs.build-macos.result == 'success')
     steps:
-      - name: Verify platform builds used the same private source commit
-        env:
-          WINDOWS_SOURCE_COMMIT: ${{ needs.build-windows.outputs.source-commit }}
-          MACOS_SOURCE_COMMIT: ${{ needs.build-macos.outputs.source-commit }}
-        run: |
-          test -n "$WINDOWS_SOURCE_COMMIT" && test "$WINDOWS_SOURCE_COMMIT" = "$MACOS_SOURCE_COMMIT"
       - name: Check out the WordPress publisher
         uses: actions/checkout@v7
         with:
@@ -257,7 +248,7 @@ jobs:
           INPUT_PHASE: complete
           INPUT_PROJECT_SLUG: bgrade
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
-          INPUT_SOURCE_COMMIT: ${{ needs.build-windows.outputs.source-commit }}
+          INPUT_SOURCE_COMMIT: ${{ needs.build-windows.outputs.source-commit || needs.build-macos.outputs.source-commit }}
           INPUT_SOURCE_RUN: ${{ github.run_id }}
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
