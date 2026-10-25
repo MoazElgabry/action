@@ -1,0 +1,470 @@
+name: Build and publish Hyogen
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: Branch, tag, or commit in the private Hyogen repository
+        required: true
+        default: main
+        type: string
+      version:
+        description: Required development version (X.Y.Z-dev.N). WordPress latest is 0.1.0-dev.32; use 0.1.0-dev.33 next.
+        required: true
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hyogen-dev-${{ inputs.version || github.run_number }}
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OFX_SDK_COMMIT: ab779510b2655b4d11a7e01e5c521f9aa8c88976
+  CARGO_BUILD_JOBS: "1"
+
+jobs:
+  prepare:
+    name: Verify source and WordPress, create one draft
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+      source-commit: ${{ steps.source.outputs.commit }}
+      release-id: ${{ steps.draft.outputs.release-id }}
+      receipt-public-key-hex: ${{ steps.receipt-key.outputs.hex }}
+    steps:
+      - name: Check out the Action repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Test the Action publisher
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Require private source access
+        shell: bash
+        env:
+          SOURCE_READ_TOKEN: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$SOURCE_READ_TOKEN" ]]; then
+            echo "Set OFX_BUILDING_READ_TOKEN with read access to the private Hyogen repository." >&2
+            exit 1
+          fi
+
+      - name: Check out the requested Hyogen source ref
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ inputs.source-ref }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Pin source commit and resolve version
+        id: source
+        shell: bash
+        env:
+          VERSION_OVERRIDE: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          commit="$(git -C hyogen-source rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not identify the Hyogen source commit." >&2; exit 1; }
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+          if ! grep -Eq '^project\(Hyogen VERSION [0-9]+\.[0-9]+\.[0-9]+' hyogen-source/source/CMakeLists.txt; then
+            echo "The selected source ref is not the Hyogen project." >&2
+            exit 1
+          fi
+          python3 hyogen-source/.github/scripts/test_release_automation.py
+          if [[ -z "${VERSION_OVERRIDE//[[:space:]]/}" ]]; then
+            echo "Enter a Hyogen development version. WordPress currently has 0.1.0-dev.32 published; use 0.1.0-dev.33 next." >&2
+            exit 1
+          fi
+          version="$(python3 hyogen-source/.github/scripts/resolve_version.py --override "${VERSION_OVERRIDE:-}" --run-number "${{ github.run_number }}")"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate public receipt-verification key
+        id: receipt-key
+        shell: bash
+        env:
+          MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL: ${{ vars.MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import os
+          import re
+
+          value = os.environ.get("MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL", "")
+          if not re.fullmatch(r"[A-Za-z0-9_-]{43}", value):
+              raise SystemExit("Set the MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL Actions variable to the unpadded Base64URL Ed25519 public key.")
+          raw = base64.urlsafe_b64decode(value + "=")
+          if len(raw) != 32 or base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=") != value:
+              raise SystemExit("The receipt public key must decode to exactly 32 bytes in canonical unpadded Base64URL form.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"hex={raw.hex()}\n")
+          PY
+
+      - name: Check WordPress automation access without changing site data
+        shell: bash
+        env:
+          INPUT_PHASE: health
+          INPUT_PROJECT_SLUG: hyogen
+          INPUT_VERSION: ${{ steps.source.outputs.version }}
+          INPUT_CHANNEL: dev
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 scripts/publish_release.py
+
+      - name: Create or reuse the Hyogen development draft
+        id: draft
+        shell: bash
+        env:
+          INPUT_PHASE: create
+          INPUT_PROJECT_SLUG: hyogen
+          INPUT_VERSION: ${{ steps.source.outputs.version }}
+          INPUT_CHANNEL: dev
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 scripts/publish_release.py
+
+  build-windows:
+    name: Windows x86_64 CUDA build and WordPress upload
+    runs-on: windows-2022
+    needs: prepare
+    timeout-minutes: 240
+    env:
+      HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+      HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
+      HYOGEN_SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned private Hyogen source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ needs.prepare.outputs.source-commit }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Confirm source revision
+        shell: pwsh
+        run: |
+          $actual = (git -C hyogen-source rev-parse HEAD).Trim()
+          if ($actual -ne $env:HYOGEN_SOURCE_COMMIT) { throw "Hyogen source commit mismatch." }
+
+      - name: Install Rust for receipt verification
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CUDA 13.3.1 build toolchain
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d
+        with:
+          cuda: "13.3.1"
+          method: network
+          sub-packages: '["nvcc", "cudart", "crt", "nvvm"]'
+
+      - name: Clone pinned OpenFX SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk="hyogen-source/source/ofx-sdk"
+          git clone --filter=blob:none --no-checkout https://github.com/AcademySoftwareFoundation/openfx.git "$sdk"
+          git -C "$sdk" fetch --depth 1 origin "$OFX_SDK_COMMIT"
+          git -C "$sdk" checkout --detach "$OFX_SDK_COMMIT"
+          test -f "$sdk/include/ofxImageEffect.h"
+
+      - name: Configure, build, test, package, and validate Windows bundles
+        shell: cmd
+        env:
+          HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+          HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
+        run: |
+          @echo off
+          setlocal EnableExtensions EnableDelayedExpansion
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSINSTALL=%%i"
+          if not defined VSINSTALL exit /b 1
+          call "!VSINSTALL!\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          if not exist "%CUDA_PATH%\include\crt\host_config.h" exit /b 1
+          set "SOURCE=hyogen-source\source"
+          cmake -S "%SOURCE%" -B "%SOURCE%\build-ci" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\Hyogen.ofx.bundle" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" -DCMAKE_CUDA_FLAGS=--compress-mode=size
+          if errorlevel 1 exit /b 1
+          cmake --build "%SOURCE%\build-ci" --parallel 1
+          if errorlevel 1 exit /b 1
+          ctest --test-dir "%SOURCE%\build-ci" --output-on-failure
+          if errorlevel 1 exit /b 1
+          cmake -S "%SOURCE%" -B "%SOURCE%\build-ci-modules" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_BUILD_MODULES=ON -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\HyogenModules.ofx.bundle" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" -DCMAKE_CUDA_FLAGS=--compress-mode=size
+          if errorlevel 1 exit /b 1
+          cmake --build "%SOURCE%\build-ci-modules" --parallel 1
+          if errorlevel 1 exit /b 1
+          ctest --test-dir "%SOURCE%\build-ci-modules" --output-on-failure
+          if errorlevel 1 exit /b 1
+          python "%SOURCE%\.github\scripts\stamp_artifact_version.py" --bundle "%SOURCE%\bundle\Hyogen.ofx.bundle" --bundle "%SOURCE%\bundle\HyogenModules.ofx.bundle" --version "%HYOGEN_VERSION%"
+          if errorlevel 1 exit /b 1
+          set "ARCHIVE=%GITHUB_WORKSPACE%\Hyogen_v%HYOGEN_VERSION%_windows_x86_64_portable.zip"
+          python "%SOURCE%\.github\scripts\package_artifact.py" --bundle "%SOURCE%\bundle\Hyogen.ofx.bundle" --bundle "%SOURCE%\bundle\HyogenModules.ofx.bundle" --output "%ARCHIVE%" --platform windows --version "%HYOGEN_VERSION%"
+          if errorlevel 1 exit /b 1
+          python "%SOURCE%\.github\scripts\validate_artifact.py" "%ARCHIVE%" --platform windows --version "%HYOGEN_VERSION%"
+          if errorlevel 1 exit /b 1
+
+      - name: Upload Windows package directly to the WordPress draft
+        shell: pwsh
+        env:
+          INPUT_PHASE: upload
+          INPUT_PROJECT_SLUG: hyogen
+          INPUT_VERSION: ${{ needs.prepare.outputs.version }}
+          INPUT_CHANNEL: dev
+          INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
+          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"Hyogen_v${{ needs.prepare.outputs.version }}_windows_x86_64_portable.zip"}]'
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python "$env:GITHUB_WORKSPACE/scripts/publish_release.py"
+
+  build-macos:
+    name: macOS universal build and WordPress upload
+    runs-on: macos-15-intel
+    needs: prepare
+    timeout-minutes: 90
+    env:
+      HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+      HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
+      HYOGEN_SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned private Hyogen source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ needs.prepare.outputs.source-commit }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Confirm source revision and install universal Rust targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
+      - name: Install Rust for universal receipt verification
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Configure, build, test, package, and validate macOS bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          sdk="$source/ofx-sdk"
+          git clone --filter=blob:none --no-checkout https://github.com/AcademySoftwareFoundation/openfx.git "$sdk"
+          git -C "$sdk" fetch --depth 1 origin "$OFX_SDK_COMMIT"
+          git -C "$sdk" checkout --detach "$OFX_SDK_COMMIT"
+          test -f "$sdk/include/ofxImageEffect.h"
+          cmake -S "$source" -B "$source/build-ci" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' \
+            "-DHYOGEN_OFX_SDK_DIR=$sdk" \
+            "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
+            "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/Hyogen.ofx.bundle" \
+            "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX"
+          cmake --build "$source/build-ci" --parallel
+          ctest --test-dir "$source/build-ci" --output-on-failure
+          cmake -S "$source" -B "$source/build-ci-modules" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DHYOGEN_BUILD_MODULES=ON \
+            "-DHYOGEN_OFX_SDK_DIR=$sdk" \
+            "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
+            "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/HyogenModules.ofx.bundle" \
+            "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX"
+          cmake --build "$source/build-ci-modules" --parallel
+          ctest --test-dir "$source/build-ci-modules" --output-on-failure -E '^MetalCompactRenderTests$'
+          ctest --test-dir "$source/build-ci-modules" --output-on-failure --verbose -R '^MetalCompactRenderTests$'
+          default="$source/bundle/Hyogen.ofx.bundle"
+          modules="$source/bundle/HyogenModules.ofx.bundle"
+          archive="$GITHUB_WORKSPACE/Hyogen_v${HYOGEN_VERSION}_macOS_universal_portable.zip"
+          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle "$default" --bundle "$modules" --version "$HYOGEN_VERSION"
+          python3 "$source/.github/scripts/package_artifact.py" --bundle "$default" --bundle "$modules" --output "$archive" --platform macos --version "$HYOGEN_VERSION"
+          python3 "$source/.github/scripts/validate_artifact.py" "$archive" --platform macos --version "$HYOGEN_VERSION"
+
+      - name: Upload macOS package directly to the WordPress draft
+        shell: bash
+        env:
+          INPUT_PHASE: upload
+          INPUT_PROJECT_SLUG: hyogen
+          INPUT_VERSION: ${{ needs.prepare.outputs.version }}
+          INPUT_CHANNEL: dev
+          INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
+          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"Hyogen_v${{ needs.prepare.outputs.version }}_macOS_universal_portable.zip"}]'
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_release.py"
+
+  build-linux:
+    name: Linux x86_64 CUDA build and WordPress upload
+    runs-on: ubuntu-22.04
+    needs: prepare
+    timeout-minutes: 120
+    env:
+      HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+      HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
+      HYOGEN_SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned private Hyogen source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ needs.prepare.outputs.source-commit }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Linux build tools and CUDA 13.3
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
+          curl --fail --show-error --location --retry 3 \
+            --output cuda-keyring.deb \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring.deb
+          sudo find /etc/apt -type f -exec sed -i \
+            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
+            install -y --no-install-recommends cuda-nvcc-13-3 cuda-cudart-dev-13-3
+          printf '%s\n' '/usr/local/cuda-13.3/bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'CUDA_PATH=/usr/local/cuda-13.3' >> "$GITHUB_ENV"
+
+      - name: Install Rust and pinned OpenFX SDK
+        uses: dtolnay/rust-toolchain@stable
+      - name: Fetch pinned OpenFX SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          sdk="$source/ofx-sdk"
+          git clone --filter=blob:none --no-checkout https://github.com/AcademySoftwareFoundation/openfx.git "$sdk"
+          git -C "$sdk" fetch --depth 1 origin "$OFX_SDK_COMMIT"
+          git -C "$sdk" checkout --detach "$OFX_SDK_COMMIT"
+          test "$(git -C "$sdk" rev-parse HEAD)" = "$OFX_SDK_COMMIT"
+
+      - name: Configure both Linux bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          for spec in "build-ci OFF Hyogen.ofx.bundle" "build-ci-modules ON HyogenModules.ofx.bundle"; do
+            read -r build_dir modules bundle <<< "$spec"
+            cmake -S "$source" -B "$source/$build_dir" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              "-DHYOGEN_BUILD_MODULES=$modules" \
+              "-DHYOGEN_OFX_SDK_DIR=$source/ofx-sdk" \
+              "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
+              "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/$bundle" \
+              "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX" \
+              '-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89' \
+              -DCMAKE_CUDA_FLAGS=--compress-mode=size
+          done
+
+      - name: Build both CUDA bundles in parallel
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          set +e
+          cmake --build "$source/build-ci" --target Hyogen --parallel 1 > "$RUNNER_TEMP/hyogen-default-build.log" 2>&1 & default_pid=$!
+          cmake --build "$source/build-ci-modules" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1 > "$RUNNER_TEMP/hyogen-modules-build.log" 2>&1 & modules_pid=$!
+          wait "$default_pid"; default_status=$?
+          wait "$modules_pid"; modules_status=$?
+          set -e
+          cat "$RUNNER_TEMP/hyogen-default-build.log"
+          cat "$RUNNER_TEMP/hyogen-modules-build.log"
+          test "$default_status" -eq 0 || { echo "Hyogen default bundle build failed." >&2; exit 1; }
+          test "$modules_status" -eq 0 || { echo "Hyogen Modules bundle build failed." >&2; exit 1; }
+
+      - name: Test, validate ABI, stamp, package, and validate Linux bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          cmake --build "$source/build-ci" --target HyogenPictureFormationResponseTests --parallel 2
+          ctest --test-dir "$source/build-ci" --output-on-failure -R '^HyogenPictureFormationResponseTests$'
+          cmake --build "$source/build-ci" --target HyogenCudaAppearanceParityTests --parallel 2
+          ctest --test-dir "$source/build-ci" --output-on-failure -R '^HyogenCudaAppearanceParityTests$'
+          ctest --test-dir "$source/build-ci-modules" --output-on-failure -R '^(HyogenModulePluginRegistrationTests|HyogenModuleDescriptorTests|HyogenCompactRenderTests)$'
+          default="$source/bundle/Hyogen.ofx.bundle"
+          modules="$source/bundle/HyogenModules.ofx.bundle"
+          archive="$GITHUB_WORKSPACE/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz"
+          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle "$default" --bundle "$modules" --version "$HYOGEN_VERSION"
+          python3 "$source/.github/scripts/package_artifact.py" --bundle "$default" --bundle "$modules" --output "$archive" --platform linux --version "$HYOGEN_VERSION"
+          python3 "$source/.github/scripts/validate_artifact.py" "$archive" --platform linux --version "$HYOGEN_VERSION"
+
+      - name: Upload Linux package directly to the WordPress draft
+        shell: bash
+        env:
+          INPUT_PHASE: upload
+          INPUT_PROJECT_SLUG: hyogen
+          INPUT_VERSION: ${{ needs.prepare.outputs.version }}
+          INPUT_CHANNEL: dev
+          INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
+          INPUT_ARTIFACTS: '[{"platform":"linux","architecture":"x86_64","path":"Hyogen_v${{ needs.prepare.outputs.version }}_linux_x86_64_portable.tar.gz"}]'
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 "$GITHUB_WORKSPACE/scripts/publish_release.py"
+
+  finalize-draft:
+    name: Record workflow result on the WordPress draft
+    needs: [prepare, build-windows, build-macos, build-linux]
+    if: >-
+      ${{
+        always() &&
+        needs.prepare.result == 'success' &&
+        (needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.build-linux.result == 'success')
+      }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Finalize uploaded targets; retain any successful partial draft
+        shell: bash
+        env:
+          INPUT_PHASE: complete
+          INPUT_PROJECT_SLUG: hyogen
+          INPUT_VERSION: ${{ needs.prepare.outputs.version }}
+          INPUT_CHANNEL: dev
+          INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
+          INPUT_SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+          INPUT_SOURCE_RUN: ${{ github.run_id }}
+          MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
+          MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
+        run: python3 scripts/publish_release.py
