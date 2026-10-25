@@ -14,7 +14,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  BGRADE_VERSION: "0.1.1"
+  BGRADE_VERSION: "0.1.2"
   RELEASE_CHANNEL: "private"
   OPENFX_COMMIT: "ab779510b2655b4d11a7e01e5c521f9aa8c88976"
   CUDA_RELEASE: "12.9.1"
@@ -120,7 +120,7 @@ jobs:
       - name: Verify public key and B-Grade version
         run: |
           if ($env:MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL -notmatch '^[A-Za-z0-9_-]{43}$') { throw "The public receipt-verification key variable is missing or malformed" }
-          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.1')) { throw "Private source is not B-Grade 0.1.1" }
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.2')) { throw "Private source is not B-Grade 0.1.2" }
       - name: Clone and verify pinned OpenFX SDK
         run: |
           $sdk = "../../Chromonotgen/source/ofx-sdk"
@@ -161,8 +161,8 @@ jobs:
           # Windows bundles do not contain Info.plist; verify identity/version
           # against the checked-out CMake project instead.
           if (!(Select-String -Path CMakeLists.txt -Pattern 'set\(PLUGIN_IDENTIFIER "com\.moazelgabry\.bgrade"\)' -Quiet)) { throw "Unexpected B-Grade bundle identifier" }
-          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.1' -Quiet)) { throw "Unexpected B-Grade bundle version" }
-          $zip = "BGrade_v0.1.1_windows_x86_64_portable.zip"
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.2' -Quiet)) { throw "Unexpected B-Grade bundle version" }
+          $zip = "BGrade_v0.1.2_windows_x86_64_portable.zip"
           if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
           Compress-Archive -Path $bundle -DestinationPath $zip -CompressionLevel Optimal
           if (!(Test-Path $zip) -or (Get-Item $zip).Length -le 0) { throw "Windows package is empty" }
@@ -172,7 +172,7 @@ jobs:
           INPUT_PROJECT_SLUG: bgrade
           INPUT_VERSION: ${{ env.BGRADE_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"BGrade_v0.1.1_windows_x86_64_portable.zip"}]'
+          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"BGrade_v0.1.2_windows_x86_64_portable.zip"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python "$env:GITHUB_WORKSPACE/publisher/scripts/publish_release.py"
@@ -209,7 +209,7 @@ jobs:
       - name: Verify public key and B-Grade version
         run: |
           [[ "$MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || { echo "The public receipt-verification key variable is missing or malformed" >&2; exit 1; }
-          grep -Eq 'project\(BGrade VERSION 0\.1\.1' CMakeLists.txt || { echo "Private source is not B-Grade 0.1.1" >&2; exit 1; }
+          grep -Eq 'project\(BGrade VERSION 0\.1\.2' CMakeLists.txt || { echo "Private source is not B-Grade 0.1.2" >&2; exit 1; }
       - name: Clone and verify pinned OpenFX SDK
         run: |
           sdk="../../Chromonotgen/source/ofx-sdk"
@@ -235,10 +235,10 @@ jobs:
           info="${bundle}/Contents/Info.plist"
           test -f "$binary" && test -f "$info" || { echo "macOS B-Grade bundle is incomplete" >&2; exit 1; }
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info" | grep -Fx 'com.moazelgabry.bgrade'
-          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info" | grep -Fx '0.1.1'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info" | grep -Fx '0.1.2'
           arches="$(lipo -archs "$binary")"
           [[ " $arches " == *" x86_64 "* && " $arches " == *" arm64 "* ]] || { echo "macOS bundle is not universal: $arches" >&2; exit 1; }
-          zip="BGrade_v0.1.1_macos_universal_portable.zip"
+          zip="BGrade_v0.1.2_macos_universal_portable.zip"
           rm -f "$zip"
           ditto -c -k --sequesterRsrc --keepParent "$bundle" "$zip"
           test -s "$zip"
@@ -248,7 +248,7 @@ jobs:
           INPUT_PROJECT_SLUG: bgrade
           INPUT_VERSION: ${{ env.BGRADE_VERSION }}
           INPUT_RELEASE_ID: ${{ needs.preflight.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"BGrade_v0.1.1_macos_universal_portable.zip"}]'
+          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"BGrade_v0.1.2_macos_universal_portable.zip"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python3 "$GITHUB_WORKSPACE/publisher/scripts/publish_release.py"
