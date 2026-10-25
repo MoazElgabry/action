@@ -212,7 +212,7 @@ jobs:
           if errorlevel 1 exit /b 1
           if not exist "%CUDA_PATH%\include\crt\host_config.h" exit /b 1
           set "SOURCE=hyogen-source\source"
-          cmake -S "%SOURCE%" -B "%SOURCE%\%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_BUILD_MODULES=%CMAKE_MODULES% -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\%STAGE_BUNDLE%" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" -DCMAKE_CUDA_FLAGS=--compress-mode=size
+          cmake -S "%SOURCE%" -B "%SOURCE%\%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_BUILD_MODULES=%CMAKE_MODULES% -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\%STAGE_BUNDLE%" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" "-DCMAKE_CUDA_FLAGS=--compress-mode=size --threads=2"
           if errorlevel 1 exit /b 1
           cmake --build "%SOURCE%\%BUILD_DIR%" --parallel 1
           if errorlevel 1 exit /b 1
@@ -503,7 +503,7 @@ jobs:
               "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/$bundle" \
               "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX" \
               '-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89' \
-              -DCMAKE_CUDA_FLAGS=--compress-mode=size
+              "-DCMAKE_CUDA_FLAGS=--compress-mode=size --threads=2"
           done
 
       - name: Build both CUDA bundles in parallel
@@ -512,13 +512,11 @@ jobs:
           set -euo pipefail
           source="$GITHUB_WORKSPACE/hyogen-source/source"
           set +e
-          cmake --build "$source/build-ci" --target Hyogen --parallel 1 > "$RUNNER_TEMP/hyogen-default-build.log" 2>&1 & default_pid=$!
-          cmake --build "$source/build-ci-modules" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1 > "$RUNNER_TEMP/hyogen-modules-build.log" 2>&1 & modules_pid=$!
+          cmake --build "$source/build-ci" --target Hyogen --parallel 1 2>&1 | tee "$RUNNER_TEMP/hyogen-default-build.log" & default_pid=$!
+          cmake --build "$source/build-ci-modules" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1 2>&1 | tee "$RUNNER_TEMP/hyogen-modules-build.log" & modules_pid=$!
           wait "$default_pid"; default_status=$?
           wait "$modules_pid"; modules_status=$?
           set -e
-          cat "$RUNNER_TEMP/hyogen-default-build.log"
-          cat "$RUNNER_TEMP/hyogen-modules-build.log"
           test "$default_status" -eq 0 || { echo "Hyogen default bundle build failed." >&2; exit 1; }
           test "$modules_status" -eq 0 || { echo "Hyogen Modules bundle build failed." >&2; exit 1; }
 
