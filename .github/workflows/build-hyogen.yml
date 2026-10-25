@@ -134,10 +134,22 @@ jobs:
         run: python3 scripts/publish_release.py
 
   build-windows:
-    name: Windows x86_64 CUDA build and WordPress upload
+    name: Windows x86_64 CUDA (${{ matrix.bundle }})
     runs-on: windows-2022
     needs: prepare
-    timeout-minutes: 240
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: default
+            build_dir: build-ci
+            cmake_modules: 'OFF'
+            stage_bundle: Hyogen.ofx.bundle
+          - bundle: modules
+            build_dir: build-ci-modules
+            cmake_modules: 'ON'
+            stage_bundle: HyogenModules.ofx.bundle
     env:
       HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
       HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
@@ -185,11 +197,12 @@ jobs:
           git -C "$sdk" checkout --detach "$OFX_SDK_COMMIT"
           test -f "$sdk/include/ofxImageEffect.h"
 
-      - name: Configure, build, test, package, and validate Windows bundles
+      - name: Configure, build, test, and stage Windows bundle
         shell: cmd
         env:
-          HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
-          HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
+          BUILD_DIR: ${{ matrix.build_dir }}
+          CMAKE_MODULES: ${{ matrix.cmake_modules }}
+          STAGE_BUNDLE: ${{ matrix.stage_bundle }}
         run: |
           @echo off
           setlocal EnableExtensions EnableDelayedExpansion
@@ -199,25 +212,66 @@ jobs:
           if errorlevel 1 exit /b 1
           if not exist "%CUDA_PATH%\include\crt\host_config.h" exit /b 1
           set "SOURCE=hyogen-source\source"
-          cmake -S "%SOURCE%" -B "%SOURCE%\build-ci" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\Hyogen.ofx.bundle" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" -DCMAKE_CUDA_FLAGS=--compress-mode=size
+          cmake -S "%SOURCE%" -B "%SOURCE%\%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_BUILD_MODULES=%CMAKE_MODULES% -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\%STAGE_BUNDLE%" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" -DCMAKE_CUDA_FLAGS=--compress-mode=size
           if errorlevel 1 exit /b 1
-          cmake --build "%SOURCE%\build-ci" --parallel 1
+          cmake --build "%SOURCE%\%BUILD_DIR%" --parallel 1
           if errorlevel 1 exit /b 1
-          ctest --test-dir "%SOURCE%\build-ci" --output-on-failure
+          ctest --test-dir "%SOURCE%\%BUILD_DIR%" --output-on-failure
           if errorlevel 1 exit /b 1
-          cmake -S "%SOURCE%" -B "%SOURCE%\build-ci-modules" -G Ninja -DCMAKE_BUILD_TYPE=Release -DHYOGEN_BUILD_MODULES=ON -DHYOGEN_OFX_SDK_DIR="%GITHUB_WORKSPACE%\%SOURCE%\ofx-sdk" -DHYOGEN_PLUGIN_DISPLAY_VERSION="%HYOGEN_VERSION%" -DHYOGEN_BUNDLE_STAGE_ROOT="%GITHUB_WORKSPACE%\%SOURCE%\bundle\HyogenModules.ofx.bundle" -DHYOGEN_RECEIPT_PUBLIC_KEY_HEX="%HYOGEN_RECEIPT_PUBLIC_KEY_HEX%" "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89" -DCMAKE_CUDA_FLAGS=--compress-mode=size
-          if errorlevel 1 exit /b 1
-          cmake --build "%SOURCE%\build-ci-modules" --parallel 1
-          if errorlevel 1 exit /b 1
-          ctest --test-dir "%SOURCE%\build-ci-modules" --output-on-failure
-          if errorlevel 1 exit /b 1
-          python "%SOURCE%\.github\scripts\stamp_artifact_version.py" --bundle "%SOURCE%\bundle\Hyogen.ofx.bundle" --bundle "%SOURCE%\bundle\HyogenModules.ofx.bundle" --version "%HYOGEN_VERSION%"
-          if errorlevel 1 exit /b 1
-          set "ARCHIVE=%GITHUB_WORKSPACE%\Hyogen_v%HYOGEN_VERSION%_windows_x86_64_portable.zip"
-          python "%SOURCE%\.github\scripts\package_artifact.py" --bundle "%SOURCE%\bundle\Hyogen.ofx.bundle" --bundle "%SOURCE%\bundle\HyogenModules.ofx.bundle" --output "%ARCHIVE%" --platform windows --version "%HYOGEN_VERSION%"
-          if errorlevel 1 exit /b 1
-          python "%SOURCE%\.github\scripts\validate_artifact.py" "%ARCHIVE%" --platform windows --version "%HYOGEN_VERSION%"
-          if errorlevel 1 exit /b 1
+
+      - name: Upload tested Windows bundle for packaging
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyogen-windows-bundle-${{ matrix.bundle }}
+          path: hyogen-source/source/bundle/${{ matrix.stage_bundle }}
+          if-no-files-found: error
+          retention-days: 1
+
+  package-windows:
+    name: Package and publish Windows artifact
+    needs: [prepare, build-windows]
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned private Hyogen source for release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ needs.prepare.outputs.source-commit }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the tested Windows bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: hyogen-windows-bundle-*
+          path: stage
+          merge-multiple: false
+
+      - name: Validate, stamp, package, and validate the Windows artifact
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'hyogen-source/source'
+          New-Item -ItemType Directory -Force -Path 'stage', 'dist' | Out-Null
+          Move-Item -LiteralPath 'stage/hyogen-windows-bundle-default' -Destination 'stage/Hyogen.ofx.bundle' -Force
+          Move-Item -LiteralPath 'stage/hyogen-windows-bundle-modules' -Destination 'stage/HyogenModules.ofx.bundle' -Force
+          python "$source/.github/scripts/stamp_artifact_version.py" --bundle 'stage/Hyogen.ofx.bundle' --bundle 'stage/HyogenModules.ofx.bundle' --version $env:HYOGEN_VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'Version stamping failed.' }
+          $archive = "dist/Hyogen_v$($env:HYOGEN_VERSION)_windows_x86_64_portable.zip"
+          python "$source/.github/scripts/package_artifact.py" --bundle 'stage/Hyogen.ofx.bundle' --bundle 'stage/HyogenModules.ofx.bundle' --output $archive --platform windows --version $env:HYOGEN_VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'Windows package creation failed.' }
+          python "$source/.github/scripts/validate_artifact.py" $archive --platform windows --version $env:HYOGEN_VERSION
+          if ($LASTEXITCODE -ne 0) { throw 'Windows artifact validation failed.' }
 
       - name: Upload Windows package directly to the WordPress draft
         shell: pwsh
@@ -227,16 +281,30 @@ jobs:
           INPUT_VERSION: ${{ needs.prepare.outputs.version }}
           INPUT_CHANNEL: dev
           INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"Hyogen_v${{ needs.prepare.outputs.version }}_windows_x86_64_portable.zip"}]'
+          INPUT_ARTIFACTS: '[{"platform":"windows","architecture":"x86_64","path":"dist/Hyogen_v${{ needs.prepare.outputs.version }}_windows_x86_64_portable.zip"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python "$env:GITHUB_WORKSPACE/scripts/publish_release.py"
 
   build-macos:
-    name: macOS universal build and WordPress upload
+    name: macOS universal (${{ matrix.bundle }})
     runs-on: macos-15-intel
     needs: prepare
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: default
+            build_dir: build-ci
+            cmake_modules: 'OFF'
+            stage_bundle: Hyogen.ofx.bundle
+            verbose_retest: false
+          - bundle: modules
+            build_dir: build-ci-modules
+            cmake_modules: 'ON'
+            stage_bundle: HyogenModules.ofx.bundle
+            verbose_retest: true
     env:
       HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
       HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
@@ -258,50 +326,100 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Confirm source revision and install universal Rust targets
+      - name: Confirm source revision
         shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
+        run: test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
+
       - name: Install Rust for universal receipt verification
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
-      - name: Configure, build, test, package, and validate macOS bundles
+      - name: Clone pinned OpenFX SDK
         shell: bash
         run: |
           set -euo pipefail
-          source="$GITHUB_WORKSPACE/hyogen-source/source"
-          sdk="$source/ofx-sdk"
+          sdk="hyogen-source/source/ofx-sdk"
           git clone --filter=blob:none --no-checkout https://github.com/AcademySoftwareFoundation/openfx.git "$sdk"
           git -C "$sdk" fetch --depth 1 origin "$OFX_SDK_COMMIT"
           git -C "$sdk" checkout --detach "$OFX_SDK_COMMIT"
           test -f "$sdk/include/ofxImageEffect.h"
-          cmake -S "$source" -B "$source/build-ci" -G Ninja \
+
+      - name: Configure, build, test, and stage macOS bundle
+        shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          CMAKE_MODULES: ${{ matrix.cmake_modules }}
+          STAGE_BUNDLE: ${{ matrix.stage_bundle }}
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          cmake -S "$source" -B "$source/$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
             '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' \
-            "-DHYOGEN_OFX_SDK_DIR=$sdk" \
+            "-DHYOGEN_BUILD_MODULES=$CMAKE_MODULES" \
+            "-DHYOGEN_OFX_SDK_DIR=$source/ofx-sdk" \
             "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
-            "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/Hyogen.ofx.bundle" \
+            "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/$STAGE_BUNDLE" \
             "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX"
-          cmake --build "$source/build-ci" --parallel
-          ctest --test-dir "$source/build-ci" --output-on-failure
-          cmake -S "$source" -B "$source/build-ci-modules" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
-            '-DCMAKE_OSX_ARCHITECTURES=x86_64;arm64' -DHYOGEN_BUILD_MODULES=ON \
-            "-DHYOGEN_OFX_SDK_DIR=$sdk" \
-            "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
-            "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/HyogenModules.ofx.bundle" \
-            "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX"
-          cmake --build "$source/build-ci-modules" --parallel
-          ctest --test-dir "$source/build-ci-modules" --output-on-failure -E '^MetalCompactRenderTests$'
-          ctest --test-dir "$source/build-ci-modules" --output-on-failure --verbose -R '^MetalCompactRenderTests$'
-          default="$source/bundle/Hyogen.ofx.bundle"
-          modules="$source/bundle/HyogenModules.ofx.bundle"
-          archive="$GITHUB_WORKSPACE/Hyogen_v${HYOGEN_VERSION}_macOS_universal_portable.zip"
-          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle "$default" --bundle "$modules" --version "$HYOGEN_VERSION"
-          python3 "$source/.github/scripts/package_artifact.py" --bundle "$default" --bundle "$modules" --output "$archive" --platform macos --version "$HYOGEN_VERSION"
+          cmake --build "$source/$BUILD_DIR" --parallel
+          if [[ "$CMAKE_MODULES" == "ON" ]]; then
+            ctest --test-dir "$source/$BUILD_DIR" --output-on-failure -E '^MetalCompactRenderTests$'
+            ctest --test-dir "$source/$BUILD_DIR" --output-on-failure --verbose -R '^MetalCompactRenderTests$'
+          else
+            ctest --test-dir "$source/$BUILD_DIR" --output-on-failure
+          fi
+
+      - name: Upload tested macOS bundle for packaging
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyogen-macos-bundle-${{ matrix.bundle }}
+          path: hyogen-source/source/bundle/${{ matrix.stage_bundle }}
+          if-no-files-found: error
+          retention-days: 1
+
+  package-macos:
+    name: Package and publish macOS artifact
+    needs: [prepare, build-macos]
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned private Hyogen source for release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ needs.prepare.outputs.source-commit }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the tested macOS bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: hyogen-macos-bundle-*
+          path: stage
+          merge-multiple: false
+
+      - name: Validate, stamp, package, and validate the macOS artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          mkdir -p stage dist
+          mv stage/hyogen-macos-bundle-default stage/Hyogen.ofx.bundle
+          mv stage/hyogen-macos-bundle-modules stage/HyogenModules.ofx.bundle
+          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --version "$HYOGEN_VERSION"
+          archive="dist/Hyogen_v${HYOGEN_VERSION}_macOS_universal_portable.zip"
+          python3 "$source/.github/scripts/package_artifact.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --output "$archive" --platform macos --version "$HYOGEN_VERSION"
           python3 "$source/.github/scripts/validate_artifact.py" "$archive" --platform macos --version "$HYOGEN_VERSION"
 
       - name: Upload macOS package directly to the WordPress draft
@@ -312,7 +430,7 @@ jobs:
           INPUT_VERSION: ${{ needs.prepare.outputs.version }}
           INPUT_CHANNEL: dev
           INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"Hyogen_v${{ needs.prepare.outputs.version }}_macOS_universal_portable.zip"}]'
+          INPUT_ARTIFACTS: '[{"platform":"macos","architecture":"universal","path":"dist/Hyogen_v${{ needs.prepare.outputs.version }}_macOS_universal_portable.zip"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python3 "$GITHUB_WORKSPACE/scripts/publish_release.py"
@@ -490,12 +608,12 @@ jobs:
 
   finalize-draft:
     name: Record workflow result on the WordPress draft
-    needs: [prepare, build-windows, build-macos, package-linux]
+    needs: [prepare, package-windows, package-macos, package-linux]
     if: >-
       ${{
         always() &&
         needs.prepare.result == 'success' &&
-        (needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.package-linux.result == 'success')
+        (needs.package-windows.result == 'success' || needs.package-macos.result == 'success' || needs.package-linux.result == 'success')
       }}
     runs-on: ubuntu-latest
     steps:
