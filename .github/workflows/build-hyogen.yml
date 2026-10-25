@@ -1,9 +1,6 @@
 name: Build and publish Hyogen
 
 on:
-  push:
-    branches: [main]
-    paths: [.github/workflows/build-hyogen.yml]
   workflow_dispatch:
     inputs:
       source-ref:
@@ -21,8 +18,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: hyogen-dev-${{ inputs.version || '0.1.0-dev.33' }}
-  cancel-in-progress: true
+  group: hyogen-dev-${{ inputs.version || github.run_number }}
+  cancel-in-progress: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -63,7 +60,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: MoazElgabry/Hyogen
-          ref: ${{ inputs.source-ref || 'main' }}
+          ref: ${{ inputs.source-ref }}
           token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
           path: hyogen-source
           fetch-depth: 1
@@ -73,7 +70,7 @@ jobs:
         id: source
         shell: bash
         env:
-          VERSION_OVERRIDE: ${{ inputs.version || '0.1.0-dev.33' }}
+          VERSION_OVERRIDE: ${{ inputs.version }}
         run: |
           set -euo pipefail
           commit="$(git -C hyogen-source rev-parse HEAD)"
