@@ -318,8 +318,10 @@ jobs:
         run: python3 "$GITHUB_WORKSPACE/scripts/publish_release.py"
 
   build-linux:
-    name: Linux x86_64 CUDA build and WordPress upload
+    name: Linux x86_64 CUDA build
     runs-on: ubuntu-22.04
+    container:
+      image: rockylinux:8.10
     needs: prepare
     timeout-minutes: 120
     env:
@@ -347,19 +349,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
-          curl --fail --show-error --location --retry 3 \
-            --output cuda-keyring.deb \
-            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring.deb
-          sudo find /etc/apt -type f -exec sed -i \
-            's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' {} +
-          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
-          sudo env DEBIAN_FRONTEND=noninteractive apt-get \
-            -o Acquire::Retries=3 -o Acquire::http::Timeout=30 \
-            install -y --no-install-recommends cuda-nvcc-13-3 cuda-cudart-dev-13-3
+          dnf install -y ca-certificates cmake gcc gcc-c++ git ninja-build python3 curl dnf-plugins-core
+          dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+          dnf clean all
+          dnf install -y cuda-nvcc-13-3 cuda-cudart-devel-13-3
           printf '%s\n' '/usr/local/cuda-13.3/bin' >> "$GITHUB_PATH"
           printf '%s\n' 'CUDA_PATH=/usr/local/cuda-13.3' >> "$GITHUB_ENV"
+          test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
 
       - name: Install Rust and pinned OpenFX SDK
         uses: dtolnay/rust-toolchain@stable
@@ -408,7 +404,7 @@ jobs:
           test "$default_status" -eq 0 || { echo "Hyogen default bundle build failed." >&2; exit 1; }
           test "$modules_status" -eq 0 || { echo "Hyogen Modules bundle build failed." >&2; exit 1; }
 
-      - name: Test, validate ABI, stamp, package, and validate Linux bundles
+      - name: Test Linux bundles
         shell: bash
         run: |
           set -euo pipefail
@@ -418,12 +414,66 @@ jobs:
           cmake --build "$source/build-ci" --target HyogenCudaAppearanceParityTests --parallel 2
           ctest --test-dir "$source/build-ci" --output-on-failure -R '^HyogenCudaAppearanceParityTests$'
           ctest --test-dir "$source/build-ci-modules" --output-on-failure -R '^(HyogenModulePluginRegistrationTests|HyogenModuleDescriptorTests|HyogenCompactRenderTests)$'
-          default="$source/bundle/Hyogen.ofx.bundle"
-          modules="$source/bundle/HyogenModules.ofx.bundle"
-          archive="$GITHUB_WORKSPACE/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz"
-          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle "$default" --bundle "$modules" --version "$HYOGEN_VERSION"
-          python3 "$source/.github/scripts/package_artifact.py" --bundle "$default" --bundle "$modules" --output "$archive" --platform linux --version "$HYOGEN_VERSION"
-          python3 "$source/.github/scripts/validate_artifact.py" "$archive" --platform linux --version "$HYOGEN_VERSION"
+
+      - name: Stage the default Linux bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyogen-linux-bundle-default
+          path: hyogen-source/source/bundle/Hyogen.ofx.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Stage the Modules Linux bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: hyogen-linux-bundle-modules
+          path: hyogen-source/source/bundle/HyogenModules.ofx.bundle
+          if-no-files-found: error
+          retention-days: 1
+
+  package-linux:
+    name: Package and publish Linux artifact
+    needs: [prepare, build-linux]
+    runs-on: ubuntu-latest
+    env:
+      HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
+      HYOGEN_SOURCE_COMMIT: ${{ needs.prepare.outputs.source-commit }}
+    steps:
+      - name: Check out the Action publisher
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the pinned private Hyogen source for release scripts
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/Hyogen
+          ref: ${{ needs.prepare.outputs.source-commit }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: hyogen-source
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the tested Linux bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: hyogen-linux-bundle-*
+          path: stage
+          merge-multiple: false
+
+      - name: Validate ABI, stamp, package, and validate the Linux artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          mkdir -p stage dist
+          mv stage/hyogen-linux-bundle-default stage/Hyogen.ofx.bundle
+          mv stage/hyogen-linux-bundle-modules stage/HyogenModules.ofx.bundle
+          python3 "$source/.github/scripts/validate_linux_abi.py" stage/Hyogen.ofx.bundle stage/HyogenModules.ofx.bundle
+          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --version "$HYOGEN_VERSION"
+          python3 "$source/.github/scripts/package_artifact.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --output "dist/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz" --platform linux --version "$HYOGEN_VERSION"
+          python3 "$source/.github/scripts/validate_artifact.py" "dist/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz" --platform linux --version "$HYOGEN_VERSION"
 
       - name: Upload Linux package directly to the WordPress draft
         shell: bash
@@ -433,19 +483,19 @@ jobs:
           INPUT_VERSION: ${{ needs.prepare.outputs.version }}
           INPUT_CHANNEL: dev
           INPUT_RELEASE_ID: ${{ needs.prepare.outputs.release-id }}
-          INPUT_ARTIFACTS: '[{"platform":"linux","architecture":"x86_64","path":"Hyogen_v${{ needs.prepare.outputs.version }}_linux_x86_64_portable.tar.gz"}]'
+          INPUT_ARTIFACTS: '[{"platform":"linux","architecture":"x86_64","path":"dist/Hyogen_v${{ needs.prepare.outputs.version }}_linux_x86_64_portable.tar.gz"}]'
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
-        run: python3 "$GITHUB_WORKSPACE/scripts/publish_release.py"
+        run: python3 scripts/publish_release.py
 
   finalize-draft:
     name: Record workflow result on the WordPress draft
-    needs: [prepare, build-windows, build-macos, build-linux]
+    needs: [prepare, build-windows, build-macos, package-linux]
     if: >-
       ${{
         always() &&
         needs.prepare.result == 'success' &&
-        (needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.build-linux.result == 'success')
+        (needs.build-windows.result == 'success' || needs.build-macos.result == 'success' || needs.package-linux.result == 'success')
       }}
     runs-on: ubuntu-latest
     steps:
