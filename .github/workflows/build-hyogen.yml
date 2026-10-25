@@ -321,7 +321,7 @@ jobs:
     name: Linux x86_64 CUDA build
     runs-on: ubuntu-22.04
     container:
-      image: rockylinux:8.10
+      image: rockylinux/rockylinux:8.10
     needs: prepare
     timeout-minutes: 120
     env:
