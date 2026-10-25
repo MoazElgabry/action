@@ -516,7 +516,7 @@ jobs:
               "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/$bundle" \
               "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX" \
               '-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89' \
-              "-DCMAKE_CUDA_FLAGS=--compress-mode=size --threads=2"
+              -DCMAKE_CUDA_FLAGS=--compress-mode=size
           done
 
       - name: Build both CUDA bundles in parallel
