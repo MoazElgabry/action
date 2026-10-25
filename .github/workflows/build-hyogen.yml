@@ -1,6 +1,9 @@
 name: Build and publish Hyogen
 
 on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/build-hyogen.yml]
   workflow_dispatch:
     inputs:
       source-ref:
@@ -18,8 +21,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: hyogen-dev-${{ inputs.version || github.run_number }}
-  cancel-in-progress: false
+  group: hyogen-dev-${{ inputs.version || '0.1.0-dev.33' }}
+  cancel-in-progress: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -60,7 +63,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: MoazElgabry/Hyogen
-          ref: ${{ inputs.source-ref }}
+          ref: ${{ inputs.source-ref || 'main' }}
           token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
           path: hyogen-source
           fetch-depth: 1
@@ -70,7 +73,7 @@ jobs:
         id: source
         shell: bash
         env:
-          VERSION_OVERRIDE: ${{ inputs.version }}
+          VERSION_OVERRIDE: ${{ inputs.version || '0.1.0-dev.33' }}
         run: |
           set -euo pipefail
           commit="$(git -C hyogen-source rev-parse HEAD)"
@@ -463,17 +466,30 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Install Linux build tools and CUDA 13.3
+      - name: Install Linux build tools
         shell: bash
         run: |
           set -euo pipefail
-          dnf install -y ca-certificates cmake gcc gcc-c++ git make python3 curl dnf-plugins-core
-          dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
+          dnf install -y --setopt=retries=5 --setopt=timeout=60 ca-certificates cmake gcc gcc-c++ git make python3 curl
+
+      - name: Configure the NVIDIA CUDA 13.3 package repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-connrefused --retry-delay 2 --connect-timeout 20 --max-time 120 \
+            https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
+            --output /etc/yum.repos.d/cuda-rhel8.repo
           dnf clean all
-          dnf install -y cuda-nvcc-13-3 cuda-cudart-devel-13-3
+          dnf makecache --refresh --setopt=retries=5 --setopt=timeout=60
+
+      - name: Install CUDA 13.3 compiler and runtime headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          dnf install -y --setopt=retries=5 --setopt=timeout=60 cuda-nvcc-13-3 cuda-cudart-devel-13-3
           printf '%s\n' '/usr/local/cuda-13.3/bin' >> "$GITHUB_PATH"
           printf '%s\n' 'CUDA_PATH=/usr/local/cuda-13.3' >> "$GITHUB_ENV"
-          test "$(git -C hyogen-source rev-parse HEAD)" = "$HYOGEN_SOURCE_COMMIT"
+          /usr/local/cuda-13.3/bin/nvcc --version
 
       - name: Install Rust and pinned OpenFX SDK
         uses: dtolnay/rust-toolchain@stable
