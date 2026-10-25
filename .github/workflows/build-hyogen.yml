@@ -467,7 +467,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dnf install -y ca-certificates cmake gcc gcc-c++ git ninja-build python3 curl dnf-plugins-core
+          dnf install -y ca-certificates cmake gcc gcc-c++ git make python3 curl dnf-plugins-core
           dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo
           dnf clean all
           dnf install -y cuda-nvcc-13-3 cuda-cudart-devel-13-3
@@ -495,7 +495,7 @@ jobs:
           source="$GITHUB_WORKSPACE/hyogen-source/source"
           for spec in "build-ci OFF Hyogen.ofx.bundle" "build-ci-modules ON HyogenModules.ofx.bundle"; do
             read -r build_dir modules bundle <<< "$spec"
-            cmake -S "$source" -B "$source/$build_dir" -G Ninja \
+            cmake -S "$source" -B "$source/$build_dir" -G "Unix Makefiles" \
               -DCMAKE_BUILD_TYPE=Release \
               "-DHYOGEN_BUILD_MODULES=$modules" \
               "-DHYOGEN_OFX_SDK_DIR=$source/ofx-sdk" \
