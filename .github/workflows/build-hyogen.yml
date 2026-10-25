@@ -519,19 +519,13 @@ jobs:
               -DCMAKE_CUDA_FLAGS=--compress-mode=size
           done
 
-      - name: Build both CUDA bundles in parallel
+      - name: Build Linux bundles sequentially to limit CUDA compiler memory
         shell: bash
         run: |
           set -euo pipefail
           source="$GITHUB_WORKSPACE/hyogen-source/source"
-          set +e
-          cmake --build "$source/build-ci" --target Hyogen --parallel 1 2>&1 | tee "$RUNNER_TEMP/hyogen-default-build.log" & default_pid=$!
-          cmake --build "$source/build-ci-modules" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1 2>&1 | tee "$RUNNER_TEMP/hyogen-modules-build.log" & modules_pid=$!
-          wait "$default_pid"; default_status=$?
-          wait "$modules_pid"; modules_status=$?
-          set -e
-          test "$default_status" -eq 0 || { echo "Hyogen default bundle build failed." >&2; exit 1; }
-          test "$modules_status" -eq 0 || { echo "Hyogen Modules bundle build failed." >&2; exit 1; }
+          cmake --build "$source/build-ci" --target Hyogen --parallel 1
+          cmake --build "$source/build-ci-modules" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1
 
       - name: Test Linux bundles
         shell: bash
