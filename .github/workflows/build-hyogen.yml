@@ -436,12 +436,24 @@ jobs:
         run: python3 "$GITHUB_WORKSPACE/scripts/publish_release.py"
 
   build-linux:
-    name: Linux x86_64 CUDA build
+    name: Linux x86_64 CUDA (${{ matrix.bundle }})
     runs-on: ubuntu-22.04
     container:
       image: rockylinux/rockylinux:8.10
     needs: prepare
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - bundle: default
+            build_dir: build-ci
+            cmake_modules: 'OFF'
+            stage_bundle: Hyogen.ofx.bundle
+          - bundle: modules
+            build_dir: build-ci-modules
+            cmake_modules: 'ON'
+            stage_bundle: HyogenModules.ofx.bundle
     env:
       HYOGEN_VERSION: ${{ needs.prepare.outputs.version }}
       HYOGEN_RECEIPT_PUBLIC_KEY_HEX: ${{ needs.prepare.outputs.receipt-public-key-hex }}
@@ -501,56 +513,48 @@ jobs:
           git -C "$sdk" checkout --detach "$OFX_SDK_COMMIT"
           test "$(git -C "$sdk" rev-parse HEAD)" = "$OFX_SDK_COMMIT"
 
-      - name: Configure both Linux bundles
+      - name: Configure Linux bundle
         shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          CMAKE_MODULES: ${{ matrix.cmake_modules }}
+          STAGE_BUNDLE: ${{ matrix.stage_bundle }}
         run: |
           set -euo pipefail
           source="$GITHUB_WORKSPACE/hyogen-source/source"
-          for spec in "build-ci OFF Hyogen.ofx.bundle" "build-ci-modules ON HyogenModules.ofx.bundle"; do
-            read -r build_dir modules bundle <<< "$spec"
-            cmake -S "$source" -B "$source/$build_dir" -G "Unix Makefiles" \
-              -DCMAKE_BUILD_TYPE=Release \
-              "-DHYOGEN_BUILD_MODULES=$modules" \
-              "-DHYOGEN_OFX_SDK_DIR=$source/ofx-sdk" \
-              "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
-              "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/$bundle" \
-              "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX" \
-              '-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89' \
-              -DCMAKE_CUDA_FLAGS=--compress-mode=size
-          done
+          cmake -S "$source" -B "$source/$BUILD_DIR" -G "Unix Makefiles" \
+            -DCMAKE_BUILD_TYPE=Release \
+            "-DHYOGEN_BUILD_MODULES=$CMAKE_MODULES" \
+            "-DHYOGEN_OFX_SDK_DIR=$source/ofx-sdk" \
+            "-DHYOGEN_PLUGIN_DISPLAY_VERSION=$HYOGEN_VERSION" \
+            "-DHYOGEN_BUNDLE_STAGE_ROOT=$source/bundle/$STAGE_BUNDLE" \
+            "-DHYOGEN_RECEIPT_PUBLIC_KEY_HEX=$HYOGEN_RECEIPT_PUBLIC_KEY_HEX" \
+            '-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89' \
+            -DCMAKE_CUDA_FLAGS=--compress-mode=size
 
-      - name: Build Linux bundles sequentially to limit CUDA compiler memory
+      - name: Build and test Linux bundle
         shell: bash
+        env:
+          BUILD_DIR: ${{ matrix.build_dir }}
+          CMAKE_MODULES: ${{ matrix.cmake_modules }}
         run: |
           set -euo pipefail
           source="$GITHUB_WORKSPACE/hyogen-source/source"
-          cmake --build "$source/build-ci" --target Hyogen --parallel 1
-          cmake --build "$source/build-ci-modules" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1
+          if [[ "$CMAKE_MODULES" == "ON" ]]; then
+            cmake --build "$source/$BUILD_DIR" --target HyogenModules HyogenModulePluginRegistrationTests HyogenModuleDescriptorTests HyogenCompactRenderTests --parallel 1
+            ctest --test-dir "$source/$BUILD_DIR" --output-on-failure -R '^(HyogenModulePluginRegistrationTests|HyogenModuleDescriptorTests|HyogenCompactRenderTests)$'
+          else
+            cmake --build "$source/$BUILD_DIR" --target Hyogen HyogenPictureFormationResponseTests --parallel 1
+            ctest --test-dir "$source/$BUILD_DIR" --output-on-failure -R '^HyogenPictureFormationResponseTests$'
+            cmake --build "$source/$BUILD_DIR" --target HyogenCudaAppearanceParityTests --parallel 1
+            ctest --test-dir "$source/$BUILD_DIR" --output-on-failure -R '^HyogenCudaAppearanceParityTests$'
+          fi
 
-      - name: Test Linux bundles
-        shell: bash
-        run: |
-          set -euo pipefail
-          source="$GITHUB_WORKSPACE/hyogen-source/source"
-          cmake --build "$source/build-ci" --target HyogenPictureFormationResponseTests --parallel 2
-          ctest --test-dir "$source/build-ci" --output-on-failure -R '^HyogenPictureFormationResponseTests$'
-          cmake --build "$source/build-ci" --target HyogenCudaAppearanceParityTests --parallel 2
-          ctest --test-dir "$source/build-ci" --output-on-failure -R '^HyogenCudaAppearanceParityTests$'
-          ctest --test-dir "$source/build-ci-modules" --output-on-failure -R '^(HyogenModulePluginRegistrationTests|HyogenModuleDescriptorTests|HyogenCompactRenderTests)$'
-
-      - name: Stage the default Linux bundle
+      - name: Stage tested Linux bundle for packaging
         uses: actions/upload-artifact@v7
         with:
-          name: hyogen-linux-bundle-default
-          path: hyogen-source/source/bundle/Hyogen.ofx.bundle
-          if-no-files-found: error
-          retention-days: 1
-
-      - name: Stage the Modules Linux bundle
-        uses: actions/upload-artifact@v7
-        with:
-          name: hyogen-linux-bundle-modules
-          path: hyogen-source/source/bundle/HyogenModules.ofx.bundle
+          name: hyogen-linux-bundle-${{ matrix.bundle }}
+          path: hyogen-source/source/bundle/${{ matrix.stage_bundle }}
           if-no-files-found: error
           retention-days: 1
 
