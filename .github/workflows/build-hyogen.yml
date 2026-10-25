@@ -261,16 +261,16 @@ jobs:
       - name: Validate, stamp, package, and validate the Windows artifact
         shell: pwsh
         run: |
-          $source = Join-Path $env:GITHUB_WORKSPACE 'hyogen-source/source'
+          $scripts = Join-Path $env:GITHUB_WORKSPACE 'hyogen-source/.github/scripts'
           New-Item -ItemType Directory -Force -Path 'stage', 'dist' | Out-Null
           Move-Item -LiteralPath 'stage/hyogen-windows-bundle-default' -Destination 'stage/Hyogen.ofx.bundle' -Force
           Move-Item -LiteralPath 'stage/hyogen-windows-bundle-modules' -Destination 'stage/HyogenModules.ofx.bundle' -Force
-          python "$source/.github/scripts/stamp_artifact_version.py" --bundle 'stage/Hyogen.ofx.bundle' --bundle 'stage/HyogenModules.ofx.bundle' --version $env:HYOGEN_VERSION
+          python "$scripts/stamp_artifact_version.py" --bundle 'stage/Hyogen.ofx.bundle' --bundle 'stage/HyogenModules.ofx.bundle' --version $env:HYOGEN_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'Version stamping failed.' }
           $archive = "dist/Hyogen_v$($env:HYOGEN_VERSION)_windows_x86_64_portable.zip"
-          python "$source/.github/scripts/package_artifact.py" --bundle 'stage/Hyogen.ofx.bundle' --bundle 'stage/HyogenModules.ofx.bundle' --output $archive --platform windows --version $env:HYOGEN_VERSION
+          python "$scripts/package_artifact.py" --bundle 'stage/Hyogen.ofx.bundle' --bundle 'stage/HyogenModules.ofx.bundle' --output $archive --platform windows --version $env:HYOGEN_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'Windows package creation failed.' }
-          python "$source/.github/scripts/validate_artifact.py" $archive --platform windows --version $env:HYOGEN_VERSION
+          python "$scripts/validate_artifact.py" $archive --platform windows --version $env:HYOGEN_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'Windows artifact validation failed.' }
 
       - name: Upload Windows package directly to the WordPress draft
@@ -413,14 +413,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          scripts="$GITHUB_WORKSPACE/hyogen-source/.github/scripts"
           mkdir -p stage dist
           mv stage/hyogen-macos-bundle-default stage/Hyogen.ofx.bundle
           mv stage/hyogen-macos-bundle-modules stage/HyogenModules.ofx.bundle
-          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --version "$HYOGEN_VERSION"
+          python3 "$scripts/stamp_artifact_version.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --version "$HYOGEN_VERSION"
           archive="dist/Hyogen_v${HYOGEN_VERSION}_macOS_universal_portable.zip"
-          python3 "$source/.github/scripts/package_artifact.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --output "$archive" --platform macos --version "$HYOGEN_VERSION"
-          python3 "$source/.github/scripts/validate_artifact.py" "$archive" --platform macos --version "$HYOGEN_VERSION"
+          python3 "$scripts/package_artifact.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --output "$archive" --platform macos --version "$HYOGEN_VERSION"
+          python3 "$scripts/validate_artifact.py" "$archive" --platform macos --version "$HYOGEN_VERSION"
 
       - name: Upload macOS package directly to the WordPress draft
         shell: bash
@@ -584,14 +584,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          source="$GITHUB_WORKSPACE/hyogen-source/source"
+          scripts="$GITHUB_WORKSPACE/hyogen-source/.github/scripts"
           mkdir -p stage dist
           mv stage/hyogen-linux-bundle-default stage/Hyogen.ofx.bundle
           mv stage/hyogen-linux-bundle-modules stage/HyogenModules.ofx.bundle
-          python3 "$source/.github/scripts/validate_linux_abi.py" stage/Hyogen.ofx.bundle stage/HyogenModules.ofx.bundle
-          python3 "$source/.github/scripts/stamp_artifact_version.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --version "$HYOGEN_VERSION"
-          python3 "$source/.github/scripts/package_artifact.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --output "dist/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz" --platform linux --version "$HYOGEN_VERSION"
-          python3 "$source/.github/scripts/validate_artifact.py" "dist/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz" --platform linux --version "$HYOGEN_VERSION"
+          python3 "$scripts/validate_linux_abi.py" stage/Hyogen.ofx.bundle stage/HyogenModules.ofx.bundle
+          python3 "$scripts/stamp_artifact_version.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --version "$HYOGEN_VERSION"
+          python3 "$scripts/package_artifact.py" --bundle stage/Hyogen.ofx.bundle --bundle stage/HyogenModules.ofx.bundle --output "dist/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz" --platform linux --version "$HYOGEN_VERSION"
+          python3 "$scripts/validate_artifact.py" "dist/Hyogen_v${HYOGEN_VERSION}_linux_x86_64_portable.tar.gz" --platform linux --version "$HYOGEN_VERSION"
 
       - name: Upload Linux package directly to the WordPress draft
         shell: bash
