@@ -21,6 +21,9 @@ inputs:
   artifacts:
     description: JSON array of objects with platform, architecture, and path fields.
     required: true
+  plugin-icon:
+    description: Optional PNG path to upload to private WordPress icon storage before creating the draft.
+    required: false
   wordpress-username:
     description: WordPress automation account username. Pass from a GitHub secret.
     required: true
@@ -47,6 +50,7 @@ runs:
         INPUT_SOURCE_COMMIT: ${{ inputs.source-commit }}
         INPUT_SOURCE_RUN: ${{ inputs.source-run }}
         INPUT_ARTIFACTS: ${{ inputs.artifacts }}
+        INPUT_PLUGIN_ICON: ${{ inputs.plugin-icon }}
         MOAZ_ER_USERNAME: ${{ inputs.wordpress-username }}
         MOAZ_ER_APPLICATION_PASSWORD: ${{ inputs.wordpress-application-password }}
         GITHUB_ACTION_PATH: ${{ github.action_path }}

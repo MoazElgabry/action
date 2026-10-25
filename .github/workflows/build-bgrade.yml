@@ -27,6 +27,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release-id: ${{ steps.create-draft.outputs.release-id }}
+      source-commit: ${{ steps.source.outputs.commit }}
     steps:
       - name: Require repository configuration
         shell: bash
@@ -49,6 +50,21 @@ jobs:
         uses: actions/checkout@v7
         with:
           path: publisher
+      - name: Check out private B-Grade icon source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/OFX-Building
+          ref: ${{ inputs.source-ref }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: ofx-building
+          persist-credentials: false
+      - name: Pin source commit for icon and platform builds
+        id: source
+        shell: bash
+        run: |
+          commit="$(git -C ofx-building rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not identify private source commit" >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Verify WordPress publishing access and storage before build
         shell: bash
         env:
@@ -67,6 +83,7 @@ jobs:
           INPUT_PROJECT_SLUG: bgrade
           INPUT_VERSION: ${{ env.BGRADE_VERSION }}
           INPUT_CHANNEL: ${{ env.RELEASE_CHANNEL }}
+          INPUT_PLUGIN_ICON: ofx-building/BGrade/source/src/B-Grade_Icon_640x360.png
           MOAZ_ER_USERNAME: ${{ secrets.MOAZ_ER_USERNAME }}
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python3 publisher/scripts/publish_release.py
@@ -86,7 +103,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: MoazElgabry/OFX-Building
-          ref: ${{ inputs.source-ref }}
+          ref: ${{ needs.preflight.outputs.source-commit }}
           token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
           path: ofx-building
           persist-credentials: false
@@ -175,7 +192,7 @@ jobs:
         uses: actions/checkout@v7
         with:
           repository: MoazElgabry/OFX-Building
-          ref: ${{ inputs.source-ref }}
+          ref: ${{ needs.preflight.outputs.source-commit }}
           token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
           path: ofx-building
           persist-credentials: false

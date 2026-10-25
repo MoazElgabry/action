@@ -36,6 +36,14 @@ class Artifact:
     sha256: str
 
 
+@dataclass(frozen=True)
+class PluginIcon:
+    plugin_slug: str
+    path: Path
+    size: int
+    sha256: str
+
+
 def _redact(message: str, values: tuple[str, ...]) -> str:
     for value in values:
         if value:
@@ -166,6 +174,37 @@ class WordPressReleaseClient:
             )
             self._open(request, timeout=300)
 
+    def upload_plugin_icon(self, icon: PluginIcon) -> None:
+        boundary = "----MoazPluginIcon" + os.urandom(12).hex()
+        filename = icon.path.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
+        prefix = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="icon"; filename="{filename}"\r\n'
+            "Content-Type: image/png\r\n\r\n"
+        ).encode("utf-8")
+        suffix = f"\r\n--{boundary}--\r\n".encode("ascii")
+        content_length = len(prefix) + icon.size + len(suffix)
+        with tempfile.TemporaryFile() as body:
+            body.write(prefix)
+            with icon.path.open("rb") as source:
+                while chunk := source.read(1024 * 1024):
+                    body.write(chunk)
+            body.write(suffix)
+            body.seek(0)
+            request = urllib.request.Request(
+                f"{self.api_origin}/automation/plugin-icons/{icon.plugin_slug}",
+                data=body,  # type: ignore[arg-type]
+                headers={
+                    **self._headers,
+                    "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    "Content-Length": str(content_length),
+                    "X-Plugin-Icon-Size": str(icon.size),
+                    "X-Plugin-Icon-SHA256": icon.sha256,
+                },
+                method="POST",
+            )
+            self._open(request, timeout=120)
+
     def publish_draft(
         self,
         project_slug: str,
@@ -250,6 +289,31 @@ def _load_artifacts(raw: str) -> list[Artifact]:
     return artifacts
 
 
+def _load_plugin_icon(raw_path: str, plugin_slug: str) -> PluginIcon | None:
+    if not raw_path.strip():
+        return None
+    if not _SLUG.fullmatch(plugin_slug):
+        raise PublishError("project-slug must be a registered lowercase slug using letters, digits, and hyphens")
+    path = Path(raw_path).expanduser()
+    if not path.is_file():
+        raise PublishError(f"plugin-icon file does not exist: {path}")
+    digest = hashlib.sha256()
+    size = 0
+    signature = b"\x89PNG\r\n\x1a\n"
+    head = b""
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            if not head:
+                head = chunk[:len(signature)]
+            size += len(chunk)
+            if size > 4 * 1024 * 1024:
+                raise PublishError("plugin-icon must not exceed 4 MiB")
+            digest.update(chunk)
+    if size < len(signature) or head != signature:
+        raise PublishError("plugin-icon must be a PNG image")
+    return PluginIcon(plugin_slug, path, size, digest.hexdigest())
+
+
 def main() -> int:
     project_slug = os.environ.get("INPUT_PROJECT_SLUG", "")
     version = os.environ.get("INPUT_VERSION", "").strip()
@@ -258,6 +322,7 @@ def main() -> int:
     channel = os.environ.get("INPUT_CHANNEL", "dev").strip() or "dev"
     phase = os.environ.get("INPUT_PHASE", "publish").strip() or "publish"
     raw_release_id = os.environ.get("INPUT_RELEASE_ID", "").strip()
+    raw_plugin_icon = os.environ.get("INPUT_PLUGIN_ICON", "")
     username = os.environ.get("MOAZ_ER_USERNAME", "")
     password = os.environ.get("MOAZ_ER_APPLICATION_PASSWORD", "")
     basic = base64.b64encode(f"{username}:{password}".encode()).decode("ascii") if username and password else ""
@@ -272,11 +337,14 @@ def main() -> int:
         )
         release_id = 0
         missing: list[str] = []
+        plugin_icon = _load_plugin_icon(raw_plugin_icon, project_slug)
         if phase == "health":
             client.check_health()
         elif phase == "create":
             if not version or any(char in version for char in "\r\n"):
                 raise PublishError("version is required and must be a single line when creating a release draft")
+            if plugin_icon is not None:
+                client.upload_plugin_icon(plugin_icon)
             release_id = client.create_draft(project_slug, version, channel)
         elif phase == "upload":
             if not raw_release_id.isdigit() or int(raw_release_id) < 1:
@@ -295,6 +363,8 @@ def main() -> int:
             if not version or any(char in version for char in "\r\n") or not source_commit or not source_run:
                 raise PublishError("version, source-commit and source-run are required")
             artifacts = _load_artifacts(os.environ.get("INPUT_ARTIFACTS", ""))
+            if plugin_icon is not None:
+                client.upload_plugin_icon(plugin_icon)
             release_id, missing = client.publish_draft(
                 project_slug, version, source_commit, source_run, artifacts, channel
             )
