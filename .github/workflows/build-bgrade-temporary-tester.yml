@@ -33,10 +33,6 @@ jobs:
     name: Build and package macOS universal tester bundle
     if: ${{ inputs.confirm-temporary-license-bypass }}
     runs-on: macos-14
-    defaults:
-      run:
-        shell: bash
-        working-directory: ofx-building/BGrade/source
     steps:
       - name: Require the private-source checkout token
         env:
@@ -55,6 +51,7 @@ jobs:
 
       - name: Record and validate temporary source
         id: source
+        working-directory: ofx-building/BGrade/source
         run: |
           commit="$(git -C ../.. rev-parse HEAD)"
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not identify private source commit" >&2; exit 1; }
@@ -64,6 +61,7 @@ jobs:
           echo "Temporary source commit: $commit"
 
       - name: Clone and verify pinned OpenFX SDK
+        working-directory: ofx-building/BGrade/source
         run: |
           sdk="../../Chromonotgen/source/ofx-sdk"
           if [ ! -f "$sdk/include/ofxImageEffect.h" ]; then
@@ -81,6 +79,7 @@ jobs:
           ninja --version
 
       - name: Configure explicit temporary licensing bypass build
+        working-directory: ofx-building/BGrade/source
         run: |
           cmake -S . -B build-macos-temporary-tester -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -105,11 +104,13 @@ jobs:
           PY
 
       - name: Build and run available tests
+        working-directory: ofx-building/BGrade/source
         run: |
           cmake --build build-macos-temporary-tester --config Release
           ctest --test-dir build-macos-temporary-tester --output-on-failure
 
       - name: Validate universal OFX bundle
+        working-directory: ofx-building/BGrade/source
         run: |
           bundle="bundle-macos-temporary-tester/BGrade.ofx.bundle"
           binary="${bundle}/Contents/MacOS/BGrade.ofx"
@@ -126,6 +127,7 @@ jobs:
           PKG_NAME: BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg
           PKG_IDENTIFIER: com.moazelgabry.bgrade.temporary-tester
           PKG_VERSION: 0.1.8.9001
+        working-directory: ofx-building/BGrade/source
         run: |
           pkgroot="${RUNNER_TEMP}/bgrade-temporary-pkgroot"
           pkg="$PKG_NAME"
