@@ -257,7 +257,7 @@ jobs:
     name: Complete private WordPress draft
     runs-on: ubuntu-latest
     needs: [preflight, build-windows, build-macos]
-    if: always() && needs.preflight.result == 'success' && (needs.build-windows.result == 'success' || needs.build-macos.result == 'success')
+    if: always() && needs.preflight.result == 'success' && needs.build-windows.result == 'success' && needs.build-macos.result == 'success'
     steps:
       - name: Check out the WordPress publisher
         uses: actions/checkout@v7
