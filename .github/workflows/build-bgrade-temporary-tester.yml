@@ -1,0 +1,161 @@
+name: Build temporary B-Grade tester installer
+
+run-name: Temporary no-license B-Grade installer from ${{ inputs.source-ref }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-ref:
+        description: Temporary source branch, tag, or commit in the private OFX-Building repository
+        required: true
+        default: temporary/bgrade-no-license-tester-20261029
+        type: string
+      confirm-temporary-license-bypass:
+        description: Confirm this build is an unlicensed temporary tester package
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  BGRADE_VERSION: "0.1.8"
+  OPENFX_COMMIT: "ab779510b2655b4d11a7e01e5c521f9aa8c88976"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  queue: max
+
+jobs:
+  build-temporary-tester-installer:
+    name: Build and package macOS universal tester bundle
+    if: ${{ inputs.confirm-temporary-license-bypass }}
+    runs-on: macos-14
+    defaults:
+      run:
+        shell: bash
+        working-directory: ofx-building/BGrade/source
+    steps:
+      - name: Require the private-source checkout token
+        env:
+          SOURCE_TOKEN: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+        run: |
+          [[ -n "$SOURCE_TOKEN" ]] || { echo "Missing GitHub Actions secret: OFX_BUILDING_READ_TOKEN" >&2; exit 1; }
+
+      - name: Check out private OFX source
+        uses: actions/checkout@v7
+        with:
+          repository: MoazElgabry/OFX-Building
+          ref: ${{ inputs.source-ref }}
+          token: ${{ secrets.OFX_BUILDING_READ_TOKEN }}
+          path: ofx-building
+          persist-credentials: false
+
+      - name: Record and validate temporary source
+        id: source
+        run: |
+          commit="$(git -C ../.. rev-parse HEAD)"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || { echo "Could not identify private source commit" >&2; exit 1; }
+          grep -Eq 'project\(BGrade VERSION 0\.1\.8' CMakeLists.txt || { echo "Unexpected B-Grade source version" >&2; exit 1; }
+          grep -Fq 'BGRADE_TEMPORARY_TEST_NO_LICENSE' src/Xgrade.cpp || { echo "Temporary licensing bypass is absent from source" >&2; exit 1; }
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "Temporary source commit: $commit"
+
+      - name: Clone and verify pinned OpenFX SDK
+        run: |
+          sdk="../../Chromonotgen/source/ofx-sdk"
+          if [ ! -f "$sdk/include/ofxImageEffect.h" ]; then
+            mkdir -p "$(dirname "$sdk")"
+            git clone --filter=blob:none https://github.com/AcademySoftwareFoundation/openfx.git "$sdk"
+            git -C "$sdk" fetch --depth 1 origin "$OPENFX_COMMIT"
+            git -C "$sdk" checkout --detach "$OPENFX_COMMIT"
+          fi
+          [[ "$(git -C "$sdk" rev-parse HEAD)" == "$OPENFX_COMMIT" ]] || { echo "OpenFX SDK commit mismatch" >&2; exit 1; }
+
+      - name: Install universal Rust targets and Ninja
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+          if ! command -v ninja >/dev/null 2>&1; then brew install ninja; fi
+          ninja --version
+
+      - name: Configure explicit temporary licensing bypass build
+        run: |
+          cmake -S . -B build-macos-temporary-tester -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS=-DBGRADE_TEMPORARY_TEST_NO_LICENSE=1 \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_OSX_ARCHITECTURES='x86_64;arm64' \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.0 \
+            -DBGRADE_BUNDLE_OUTPUT_DIR="$PWD/bundle-macos-temporary-tester" \
+            -DBGRADE_ENABLE_CUDA_TOOLCHAIN=OFF \
+            -DBGRADE_ENABLE_METAL_TOOLCHAIN=ON \
+            -DBGRADE_REQUIRE_METAL_TOOLCHAIN=ON \
+            -DBUILD_TESTING=ON
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          commands = json.loads(Path("build-macos-temporary-tester/compile_commands.json").read_text())
+          plugin_commands = [item for item in commands if Path(item["file"]).name == "Xgrade.cpp"]
+          if not plugin_commands or not any("BGRADE_TEMPORARY_TEST_NO_LICENSE=1" in item.get("command", "") for item in plugin_commands):
+              raise SystemExit("The temporary license bypass is not present in the Xgrade compile command")
+          print("Verified the temporary license bypass on the Xgrade compile command.")
+          PY
+
+      - name: Build and run available tests
+        run: |
+          cmake --build build-macos-temporary-tester --config Release
+          ctest --test-dir build-macos-temporary-tester --output-on-failure
+
+      - name: Validate universal OFX bundle
+        run: |
+          bundle="bundle-macos-temporary-tester/BGrade.ofx.bundle"
+          binary="${bundle}/Contents/MacOS/BGrade.ofx"
+          info="${bundle}/Contents/Info.plist"
+          test -f "$binary" && test -f "$info" || { echo "macOS B-Grade bundle is incomplete" >&2; exit 1; }
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info" | grep -Fx 'com.moazelgabry.bgrade'
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$info" | grep -Fx "$BGRADE_VERSION"
+          arches="$(lipo -archs "$binary")"
+          [[ " $arches " == *" x86_64 "* && " $arches " == *" arm64 "* ]] || { echo "macOS bundle is not universal: $arches" >&2; exit 1; }
+          echo "Universal architectures: $arches"
+
+      - name: Create temporary unsigned macOS installer package
+        env:
+          PKG_NAME: BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg
+          PKG_IDENTIFIER: com.moazelgabry.bgrade.temporary-tester
+          PKG_VERSION: 0.1.8.9001
+        run: |
+          pkgroot="${RUNNER_TEMP}/bgrade-temporary-pkgroot"
+          pkg="$PKG_NAME"
+          rm -rf "$pkgroot" "$pkg" "$pkg.sha256"
+          mkdir -p "$pkgroot/Library/OFX/Plugins"
+          ditto "bundle-macos-temporary-tester/BGrade.ofx.bundle" "$pkgroot/Library/OFX/Plugins/BGrade.ofx.bundle"
+          pkgbuild --root "$pkgroot" --identifier "$PKG_IDENTIFIER" --version "$PKG_VERSION" --install-location / "$pkg"
+
+          expanded="${RUNNER_TEMP}/bgrade-temporary-pkg-expanded"
+          rm -rf "$expanded"
+          pkgutil --expand "$pkg" "$expanded"
+          package_info="$(cat "$expanded/PackageInfo")"
+          grep -Fq "identifier=\"$PKG_IDENTIFIER\"" <<<"$package_info" || { echo "Unexpected temporary package identifier" >&2; exit 1; }
+          grep -Fq "version=\"$PKG_VERSION\"" <<<"$package_info" || { echo "Unexpected temporary package version" >&2; exit 1; }
+          grep -Fq 'install-location="/"' <<<"$package_info" || { echo "Unexpected install location" >&2; exit 1; }
+          payload="$(pkgutil --payload-files "$pkg")"
+          grep -Fq 'Library/OFX/Plugins/BGrade.ofx.bundle/Contents/MacOS/BGrade.ofx' <<<"$payload" || { echo "Package payload is missing the OFX binary" >&2; exit 1; }
+          signature_log="${RUNNER_TEMP}/bgrade-temporary-pkg-signature.txt"
+          pkgutil --check-signature "$pkg" >"$signature_log" 2>&1 || true
+          cat "$signature_log"
+          grep -Fq 'Status: no signature' "$signature_log" || { echo "Expected the same unsigned installer format used for Chromonotgen" >&2; exit 1; }
+          shasum -a 256 "$pkg" | awk '{print tolower($1) "  " $2}' > "$pkg.sha256"
+          shasum -a 256 -c "$pkg.sha256"
+
+      - name: Upload temporary installer for tester download
+        uses: actions/upload-artifact@v7
+        with:
+          name: BGrade-temporary-no-license-macos-installer
+          path: |
+            BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg
+            BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg.sha256
+          if-no-files-found: error
+          retention-days: 3
