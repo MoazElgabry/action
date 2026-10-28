@@ -157,7 +157,7 @@ jobs:
         with:
           name: BGrade-temporary-no-license-macos-installer
           path: |
-            BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg
-            BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg.sha256
+            ofx-building/BGrade/source/BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg
+            ofx-building/BGrade/source/BGrade_v0.1.8_macos_universal_TEMPORARY_NO_LICENSE.pkg.sha256
           if-no-files-found: error
           retention-days: 3
