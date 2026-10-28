@@ -8,7 +8,7 @@ on:
       source-ref:
         description: Temporary source branch, tag, or commit in the private OFX-Building repository
         required: true
-        default: temporary/bgrade-no-license-tester-20261029
+        default: temporary/bgrade-license-disabled-tester-20261029
         type: string
       confirm-temporary-license-bypass:
         description: Confirm this build is an unlicensed temporary tester package
