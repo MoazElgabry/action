@@ -120,7 +120,7 @@ jobs:
       - name: Verify public key and B-Grade version
         run: |
           if ($env:MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL -notmatch '^[A-Za-z0-9_-]{43}$') { throw "The public receipt-verification key variable is missing or malformed" }
-          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.4')) { throw "Private source is not B-Grade 0.1.5" }
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.5')) { throw "Private source is not B-Grade 0.1.5" }
       - name: Clone and verify pinned OpenFX SDK
         run: |
           $sdk = "../../Chromonotgen/source/ofx-sdk"
@@ -161,7 +161,7 @@ jobs:
           # Windows bundles do not contain Info.plist; verify identity/version
           # against the checked-out CMake project instead.
           if (!(Select-String -Path CMakeLists.txt -Pattern 'set\(PLUGIN_IDENTIFIER "com\.moazelgabry\.bgrade"\)' -Quiet)) { throw "Unexpected B-Grade bundle identifier" }
-          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.4' -Quiet)) { throw "Unexpected B-Grade bundle version" }
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(BGrade VERSION 0\.1\.5' -Quiet)) { throw "Unexpected B-Grade bundle version" }
           $zip = "BGrade_v0.1.5_windows_x86_64_portable.zip"
           if (Test-Path $zip) { Remove-Item -LiteralPath $zip -Force }
           Compress-Archive -Path $bundle -DestinationPath $zip -CompressionLevel Optimal
@@ -209,7 +209,7 @@ jobs:
       - name: Verify public key and B-Grade version
         run: |
           [[ "$MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || { echo "The public receipt-verification key variable is missing or malformed" >&2; exit 1; }
-          grep -Eq 'project\(BGrade VERSION 0\.1\.4' CMakeLists.txt || { echo "Private source is not B-Grade 0.1.5" >&2; exit 1; }
+          grep -Eq 'project\(BGrade VERSION 0\.1\.5' CMakeLists.txt || { echo "Private source is not B-Grade 0.1.5" >&2; exit 1; }
       - name: Clone and verify pinned OpenFX SDK
         run: |
           sdk="../../Chromonotgen/source/ofx-sdk"
