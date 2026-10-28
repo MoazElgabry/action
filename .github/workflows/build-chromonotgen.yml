@@ -14,7 +14,7 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  CHROMONOTGEN_VERSION: "0.4.0"
+  CHROMONOTGEN_VERSION: "0.4.1"
   RELEASE_CHANNEL: "private"
   OPENFX_COMMIT: "ab779510b2655b4d11a7e01e5c521f9aa8c88976"
   CUDA_RELEASE: "12.9.1"
@@ -87,8 +87,8 @@ jobs:
     env:
       BUNDLE_NAME: Chromonotgen.ofx.bundle
       BUNDLE_BINARY: Chromonotgen.ofx
-      ZIP_NAME: Chromonotgen_v0.4.0_windows_x86_64_portable.zip
-      ARTIFACT_NAME: Chromonotgen-v0.4.0-windows-x86_64
+      ZIP_NAME: Chromonotgen_v0.4.1_windows_x86_64_portable.zip
+      ARTIFACT_NAME: Chromonotgen-v0.4.1-windows-x86_64
     defaults:
       run:
         shell: powershell
@@ -118,7 +118,7 @@ jobs:
       - name: Verify access key and project version
         run: |
           if ($env:MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL -notmatch '^[A-Za-z0-9_-]{43}$') { throw "The public receipt-verification key variable is missing or malformed" }
-          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(Chromonotgen VERSION 0\.4\.0')) { throw "Private source is not Chromonotgen 0.4.0" }
+          if (!(Select-String -Path CMakeLists.txt -Pattern 'project\(Chromonotgen VERSION 0\.4\.1')) { throw "Private source is not Chromonotgen 0.4.1" }
 
       - name: Clone pinned OpenFX SDK
         run: |
@@ -258,10 +258,10 @@ jobs:
     env:
       BUNDLE_NAME: Chromonotgen.ofx.bundle
       BUNDLE_BINARY: Chromonotgen.ofx
-      ZIP_NAME: Chromonotgen_v0.4.0_macos_universal_portable.zip
-      PKG_NAME: Chromonotgen_v0.4.0_macos_universal.pkg
+      ZIP_NAME: Chromonotgen_v0.4.1_macos_universal_portable.zip
+      PKG_NAME: Chromonotgen_v0.4.1_macos_universal.pkg
       PKG_IDENTIFIER: com.moazelgabry.chromonotgen.installer
-      ARTIFACT_NAME: Chromonotgen-v0.4.0-macos-universal
+      ARTIFACT_NAME: Chromonotgen-v0.4.1-macos-universal
     defaults:
       run:
         shell: bash
@@ -291,7 +291,7 @@ jobs:
       - name: Verify access key and project version
         run: |
           [[ "$MOAZ_ER_ACCESS_PUBLIC_KEY_BASE64URL" =~ ^[A-Za-z0-9_-]{43}$ ]] || { echo "The public receipt-verification key variable is missing or malformed" >&2; exit 1; }
-          grep -Eq 'project\(Chromonotgen VERSION 0\.4\.0' CMakeLists.txt || { echo "Private source is not Chromonotgen 0.4.0" >&2; exit 1; }
+          grep -Eq 'project\(Chromonotgen VERSION 0\.4\.1' CMakeLists.txt || { echo "Private source is not Chromonotgen 0.4.1" >&2; exit 1; }
 
       - name: Clone pinned OpenFX SDK
         run: |
