@@ -147,8 +147,8 @@ class PublishActionTests(unittest.TestCase):
         diagnostics = {
             "enabled": True,
             "logSourcePath": {
-                "windows": r"%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\logs\ResolveDebug.txt",
-                "macos": "~/Library/Logs/Blackmagic Design/DaVinci Resolve/ResolveDebug.txt",
+                "windows": r"%LOCALAPPDATA%\Moaz Elgabry\B-Grade\Logs\metal-performance.log",
+                "macos": "~/Library/Logs/Moaz Elgabry/B-Grade/metal-performance.log",
             },
             "environment": {"BGRADE_METAL_PERF": "1"},
         }
