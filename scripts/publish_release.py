@@ -220,12 +220,25 @@ class WordPressReleaseClient:
         missing = self.complete_draft(release_id, source_commit, source_run)
         return release_id, missing
 
-    def create_draft(self, project_slug: str, version: str, channel: str) -> int:
+    def create_draft(
+        self,
+        project_slug: str,
+        version: str,
+        channel: str,
+        diagnostics: Mapping[str, object] | None = None,
+    ) -> int:
         if channel not in {"dev", "private"}:
             raise PublishError("channel must be dev or private")
+        payload: dict[str, object] = {
+            "channel": channel,
+            "plugin": project_slug,
+            "version": version,
+        }
+        if diagnostics is not None:
+            payload["diagnostics"] = dict(diagnostics)
         created = self._json(
             "/automation/releases",
-            {"channel": channel, "plugin": project_slug, "version": version},
+            payload,
         )
         return self._get_release_id(created)
 
@@ -314,6 +327,35 @@ def _load_plugin_icon(raw_path: str, plugin_slug: str) -> PluginIcon | None:
     return PluginIcon(plugin_slug, path, size, digest.hexdigest())
 
 
+def _load_diagnostics(raw: str) -> dict[str, object] | None:
+    if not raw.strip():
+        return None
+    try:
+        diagnostics = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise PublishError(f"diagnostics must be a JSON object: {error.msg}") from None
+    if not isinstance(diagnostics, dict):
+        raise PublishError("diagnostics must be a JSON object")
+    if not isinstance(diagnostics.get("enabled"), bool):
+        raise PublishError("diagnostics.enabled must be true or false")
+    log_sources = diagnostics.get("logSourcePath", {})
+    environment = diagnostics.get("environment", {})
+    if not isinstance(log_sources, dict) or not isinstance(environment, dict):
+        raise PublishError("diagnostics.logSourcePath and diagnostics.environment must be objects")
+    for platform, paths in log_sources.items():
+        if not isinstance(platform, str) or not _TARGET_PART.fullmatch(platform):
+            raise PublishError("diagnostics.logSourcePath has an invalid platform key")
+        values = paths if isinstance(paths, list) else [paths]
+        if not values or any(not isinstance(path, str) or not path.strip() for path in values):
+            raise PublishError("diagnostics.logSourcePath values must be non-empty strings or arrays of strings")
+    for key, value in environment.items():
+        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            raise PublishError("diagnostics.environment has an invalid variable name")
+        if not isinstance(value, str) or any(char in value for char in "\r\n\0"):
+            raise PublishError("diagnostics.environment values must be single-line strings")
+    return diagnostics
+
+
 def main() -> int:
     project_slug = os.environ.get("INPUT_PROJECT_SLUG", "")
     version = os.environ.get("INPUT_VERSION", "").strip()
@@ -338,6 +380,7 @@ def main() -> int:
         release_id = 0
         missing: list[str] = []
         plugin_icon = _load_plugin_icon(raw_plugin_icon, project_slug)
+        diagnostics = _load_diagnostics(os.environ.get("INPUT_DIAGNOSTICS_JSON", ""))
         if phase == "health":
             client.check_health()
         elif phase == "create":
@@ -345,7 +388,7 @@ def main() -> int:
                 raise PublishError("version is required and must be a single line when creating a release draft")
             if plugin_icon is not None:
                 client.upload_plugin_icon(plugin_icon)
-            release_id = client.create_draft(project_slug, version, channel)
+            release_id = client.create_draft(project_slug, version, channel, diagnostics)
         elif phase == "upload":
             if not raw_release_id.isdigit() or int(raw_release_id) < 1:
                 raise PublishError("release-id must be a positive integer for artifact upload")

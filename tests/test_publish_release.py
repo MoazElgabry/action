@@ -142,6 +142,40 @@ class PublishActionTests(unittest.TestCase):
         self.assertEqual(release_id, 88)
         self.assertEqual(requests, [{"channel": "private", "plugin": "chromonotgen", "version": "0.4.0"}])
 
+    def test_release_draft_passes_manager_diagnostics_to_wordpress(self) -> None:
+        requests: list[dict[str, object]] = []
+        diagnostics = {
+            "enabled": True,
+            "logSourcePath": {
+                "windows": r"%APPDATA%\Blackmagic Design\DaVinci Resolve\Support\logs\ResolveDebug.txt",
+                "macos": "~/Library/Logs/Blackmagic Design/DaVinci Resolve/ResolveDebug.txt",
+            },
+            "environment": {"BGRADE_METAL_PERF": "1"},
+        }
+
+        def fake_open(request: Request, timeout: int = 0) -> _Response:
+            requests.append(json.loads(request.data.decode("utf-8")))
+            return _Response({"release": {"id": 89}})
+
+        with patch.object(publisher.urllib.request.OpenerDirector, "open", side_effect=fake_open):
+            client = publisher.WordPressReleaseClient("https://example.test/api", "account", "app-password")
+            release_id = client.create_draft("bgrade", "0.1.9", "private", diagnostics)
+
+        self.assertEqual(release_id, 89)
+        self.assertEqual(requests, [{
+            "channel": "private",
+            "diagnostics": diagnostics,
+            "plugin": "bgrade",
+            "version": "0.1.9",
+        }])
+
+    def test_diagnostics_environment_rejects_invalid_variable_names(self) -> None:
+        with self.assertRaisesRegex(publisher.PublishError, "invalid variable name"):
+            publisher._load_diagnostics(json.dumps({
+                "enabled": True,
+                "environment": {"BGRADE METAL PERF": "1"},
+            }))
+
     def test_unknown_automation_channel_is_rejected_before_api_request(self) -> None:
         client = publisher.WordPressReleaseClient("https://example.test/api", "account", "app-password")
         with self.assertRaisesRegex(publisher.PublishError, "channel must be dev or private"):
