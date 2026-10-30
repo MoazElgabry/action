@@ -181,7 +181,7 @@ jobs:
 
   build-macos:
     name: macOS universal Metal build
-    runs-on: macos-14
+    runs-on: macos-15
     needs: preflight
     outputs:
       source-commit: ${{ steps.source.outputs.commit }}
