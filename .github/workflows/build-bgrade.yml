@@ -230,6 +230,22 @@ jobs:
         run: |
           bash ./build_macos_universal.sh build-macos-universal
           ctest --test-dir build-macos-universal --output-on-failure
+      - name: Verify embedded Metal kernel library
+        run: |
+          bundle="bundle/BGrade.ofx.bundle"
+          binary="${bundle}/Contents/MacOS/BGrade.ofx"
+          otool_output="$(otool -l "$binary")"
+          grep -q '__bgrade_msl' <<< "$otool_output" || {
+            echo "Embedded Metal kernel section __TEXT,__bgrade_msl is missing" >&2
+            exit 1
+          }
+          section_size="$(printf '%s\n' "$otool_output" | awk '/sectname __bgrade_msl/{found=1; next} found && /size /{print $2; exit}')"
+          if [[ -z "$section_size" || "$section_size" =~ ^(0x)?0+$ ]]; then
+            echo "Embedded Metal kernel section is empty: ${section_size:-missing}" >&2
+            exit 1
+          fi
+          ctest --test-dir build-macos-universal -R '^BGradeMetalSmokeTests$' \
+            --output-on-failure -V
       - name: Validate and package macOS bundle
         run: |
           bundle="bundle/BGrade.ofx.bundle"
