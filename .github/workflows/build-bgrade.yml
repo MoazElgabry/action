@@ -8,6 +8,10 @@ on:
         required: true
         default: main
         type: string
+      release-id:
+        description: Existing private release draft ID to reuse when retrying a build
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -26,7 +30,7 @@ jobs:
     name: Check configuration and create private release draft
     runs-on: ubuntu-latest
     outputs:
-      release-id: ${{ steps.create-draft.outputs.release-id }}
+      release-id: ${{ steps.create-draft.outputs.release-id || steps.reuse-draft.outputs.release-id }}
       source-commit: ${{ steps.source.outputs.commit }}
     steps:
       - name: Require repository configuration
@@ -76,8 +80,18 @@ jobs:
           MOAZ_ER_APPLICATION_PASSWORD: ${{ secrets.MOAZ_ER_APPLICATION_PASSWORD }}
         run: python3 publisher/scripts/publish_release.py
 
+      - name: Reuse existing private WordPress draft
+        id: reuse-draft
+        if: ${{ inputs.release-id != '' }}
+        shell: bash
+        env:
+          RELEASE_ID: ${{ inputs.release-id }}
+        run: |
+          [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]] || { echo "Existing release ID must be a positive integer" >&2; exit 1; }
+          echo "release-id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
       - name: Create private WordPress draft
         id: create-draft
+        if: ${{ inputs.release-id == '' }}
         env:
           INPUT_PHASE: create
           INPUT_PROJECT_SLUG: bgrade
